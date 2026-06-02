@@ -12,8 +12,10 @@ import activityRoutes from "./routes/activityRoutes.js";
 import availabilityRoutes from "./routes/availabilityRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import wishlistRoutes from "./routes/wishlistRoutes.js";
 import { browseListings, locationSuggestions, browseNearby, getPublicListing } from "./controllers/listingController.js";
-import { browseActivities } from "./controllers/activityController.js";
+import { browseActivities, getPublicActivity } from "./controllers/activityController.js";
+import { getPublicTestimonials } from "./controllers/adminController.js";
 import destinationRoutes from "./routes/destinationRoutes.js";
 
 const app = express();
@@ -164,8 +166,10 @@ app.use("/api/admin", adminRoutes);
 app.get("/api/listings/browse", browseListings as any);
 app.get("/api/public/listing/:slug", getPublicListing as any);
 app.get("/api/activities/browse", browseActivities as any);
+app.get("/api/public/activity/:slug", getPublicActivity as any);
 app.get("/api/locations/suggest", locationSuggestions as any);
 app.get("/api/nearby/browse", browseNearby as any);
+app.get("/api/testimonials", getPublicTestimonials as any);
 
 // Public destination routes (no auth required)
 app.use("/api/destinations", destinationRoutes);
@@ -176,6 +180,7 @@ app.use("/api/activities", activityRoutes);
 app.use("/api/availability", availabilityRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/wishlist", wishlistRoutes);
 
 // Health check endpoint
 app.get("/api/health", (_req: Request, res: Response) => {

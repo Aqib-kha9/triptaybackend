@@ -533,3 +533,53 @@ export const browseActivities = async (req: Request, res: Response, next: NextFu
     next(error);
   }
 };
+
+// ──────────────────────── PUBLIC: Get Single Activity ────────────────────────
+
+// @desc    Get a single published activity by slug or ID (public facing)
+// @route   GET /api/public/activity/:slug
+// @access  Public
+export const getPublicActivity = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { slug } = req.params;
+
+    // 1) Try by slug first
+    let activity = await Activity.findOne({ slug, status: "published", isActive: true })
+      .populate("host", "name avatar email phone")
+      .select("-__v")
+      .lean();
+
+    // 2) Fallback: try by _id (ObjectId)
+    if (!activity) {
+      try {
+        activity = await Activity.findOne({ _id: slug, status: "published", isActive: true })
+          .populate("host", "name avatar email phone")
+          .select("-__v")
+          .lean();
+      } catch {
+        // invalid ObjectId string → ignore
+      }
+    }
+
+    if (!activity) {
+      res.status(404).json({ status: "fail", message: "Activity not found." });
+      return;
+    }
+
+    // Attach computed effectiveWeekendPrice
+    const enriched = {
+      ...activity,
+      effectiveWeekendPrice: computeEffectiveWeekendPrice(
+        (activity as any).basePrice,
+        (activity as any).weekendPrice
+      ),
+    };
+
+    res.status(200).json({
+      status: "success",
+      data: { activity: enriched },
+    });
+  } catch (error) {
+    next(error);
+  }
+};

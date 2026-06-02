@@ -21,6 +21,10 @@ import {
   toggleUserStatus,
   updateUserWallet,
   deleteUser,
+  listTestimonials,
+  createTestimonial,
+  updateTestimonial,
+  deleteTestimonial,
 } from "../controllers/adminController.js";
 import {
   adminListDestinations,
@@ -100,5 +104,11 @@ router.post(
   },
   uploadDestinationImage as any
 );
+
+// ── Protected: Testimonial Management endpoints ──
+router.get("/testimonials", adminProtect, listTestimonials as any);
+router.post("/testimonials", adminProtect, createTestimonial as any);
+router.put("/testimonials/:id", adminProtect, updateTestimonial as any);
+router.delete("/testimonials/:id", adminProtect, deleteTestimonial as any);
 
 export default router;

@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { User } from "../models/User.js";
 import { Listing } from "../models/Listing.js";
 import { Activity } from "../models/Activity.js";
+import { Testimonial } from "../models/Testimonial.js";
 
 // ──────────────────────── Helper ────────────────────────
 
@@ -1013,6 +1014,148 @@ export const deleteUser = async (
     res.status(200).json({
       success: true,
       message: `User "${user.name}" has been permanently deleted.`,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ──────────────────────── Testimonial Controllers ────────────────────────
+
+/**
+ * @desc    Admin — List all testimonials (including inactive)
+ * @route   GET /api/admin/testimonials
+ * @access  Admin only
+ */
+export const listTestimonials = async (
+  _req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const testimonials = await Testimonial.find().sort({ order: 1, createdAt: -1 }).lean();
+    res.status(200).json({
+      status: "success",
+      results: testimonials.length,
+      data: { testimonials },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Admin — Create a new testimonial
+ * @route   POST /api/admin/testimonials
+ * @access  Admin only
+ */
+export const createTestimonial = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { name, role, text, image, order, isActive } = req.body;
+    const testimonial = await Testimonial.create({
+      name,
+      role,
+      text,
+      image: image || "",
+      order: order ?? 0,
+      isActive: isActive ?? true,
+    });
+    res.status(201).json({
+      status: "success",
+      data: { testimonial },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Admin — Update a testimonial
+ * @route   PUT /api/admin/testimonials/:id
+ * @access  Admin only
+ */
+export const updateTestimonial = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { name, role, text, image, order, isActive } = req.body;
+
+    const testimonial = await Testimonial.findById(id);
+    if (!testimonial) {
+      res.status(404).json({ status: "fail", message: "Testimonial not found." });
+      return;
+    }
+
+    if (name !== undefined) testimonial.name = name;
+    if (role !== undefined) testimonial.role = role;
+    if (text !== undefined) testimonial.text = text;
+    if (image !== undefined) testimonial.image = image;
+    if (order !== undefined) testimonial.order = order;
+    if (isActive !== undefined) testimonial.isActive = isActive;
+
+    await testimonial.save();
+
+    res.status(200).json({
+      status: "success",
+      data: { testimonial },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Admin — Delete a testimonial
+ * @route   DELETE /api/admin/testimonials/:id
+ * @access  Admin only
+ */
+export const deleteTestimonial = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const testimonial = await Testimonial.findByIdAndDelete(id);
+    if (!testimonial) {
+      res.status(404).json({ status: "fail", message: "Testimonial not found." });
+      return;
+    }
+    res.status(200).json({
+      status: "success",
+      message: "Testimonial deleted successfully.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * @desc    Public — Get active testimonials (sorted by order)
+ * @route   GET /api/testimonials
+ * @access  Public
+ */
+export const getPublicTestimonials = async (
+  _req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const testimonials = await Testimonial.find({ isActive: true })
+      .sort({ order: 1, createdAt: -1 })
+      .select("name role text image order")
+      .lean();
+    res.status(200).json({
+      status: "success",
+      results: testimonials.length,
+      data: { testimonials },
     });
   } catch (error) {
     next(error);

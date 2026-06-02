@@ -125,18 +125,26 @@ app.use("/api/", (req: Request, res: Response, next) => {
   const origin = req.headers.origin;
   const referer = req.headers.referer;
 
+  // Allow requests with no origin/referer (mobile apps, server-to-server, curl)
   if (!origin && !referer) {
     return next();
   }
 
-  if (origin && !allowedOrigins.includes(origin)) {
+  // Helper: check if an origin is allowed (exact match or *.vercel.app wildcard)
+  const isOriginAllowed = (o: string): boolean => {
+    if (allowedOrigins.includes(o)) return true;
+    if (o.endsWith(".vercel.app")) return true;
+    return false;
+  };
+
+  if (origin && !isOriginAllowed(origin)) {
     res
       .status(403)
       .json({ status: "fail", message: "Cross-origin request rejected by CSRF protection." });
     return;
   }
 
-  if (referer && !allowedOrigins.some((allowed) => referer.startsWith(allowed))) {
+  if (referer && !allowedOrigins.some((allowed) => referer.startsWith(allowed)) && !referer.includes(".vercel.app")) {
     res
       .status(403)
       .json({ status: "fail", message: "Cross-origin request rejected by CSRF protection." });

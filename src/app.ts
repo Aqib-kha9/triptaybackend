@@ -23,16 +23,30 @@ const app = express();
 // 1. HTTP security headers (X-Frame-Options, X-XSS-Protection, CSP, etc.)
 app.use(helmet());
 
-// 2. CORS — allow Next.js frontend (3000) and Admin panel (3001)
+// 2. CORS — allow Next.js frontend and Admin panel (dev + production)
 const allowedOrigins = [
-  process.env.CLIENT_URL || "http://localhost:3001",
+  process.env.CLIENT_URL as string,
   "http://localhost:3000",
-];
+  "http://localhost:3001",
+  "https://triptay-eight.vercel.app",
+  "https://triptay.vercel.app",
+  "https://triptaybackend.onrender.com",
+].filter(Boolean);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Allow requests with no origin (mobile apps, curl, server-to-server)
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      // Allow any vercel.app subdomain (for preview deployments)
+      if (origin.endsWith(".vercel.app")) {
+        callback(null, true);
+        return;
+      }
+      if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`Origin ${origin} not allowed by CORS`));

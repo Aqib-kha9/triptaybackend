@@ -235,16 +235,18 @@ export const sendOtp = async (req: Request, res: Response, next: NextFunction): 
       await Otp.findOneAndUpdate(
         { identifier: cleanId },
         { code, createdAt: new Date() },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: "after" }
       );
 
-      // In production, send code via SMS/email service
-      console.log(`[OTP] ${cleanId} → ${code}`);
+      // Only log OTP codes in development (Render sets NODE_ENV=production)
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[OTP] ${cleanId} → ${code}`);
+      }
 
       res.status(200).json({
         status: "success",
         message: `OTP sent to ${cleanId}.`,
-        devCode: code,
+        ...(process.env.NODE_ENV !== "production" && { devCode: code }),
       });
     } catch (error) {
       next(error);
@@ -527,7 +529,7 @@ export const updateProfile = async (req: any, res: Response, next: NextFunction)
       return;
     }
 
-    const updatedUser = await User.findByIdAndUpdate(userId, { $set: updates }, { new: true, runValidators: true });
+    const updatedUser = await User.findByIdAndUpdate(userId, { $set: updates }, { returnDocument: "after", runValidators: true });
 
     if (!updatedUser) {
       res.status(404).json({ status: "fail", message: "User not found after update." });

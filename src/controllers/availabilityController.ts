@@ -172,7 +172,7 @@ export const blockDates = async (req: any, res: Response, next: NextFunction): P
         $addToSet: { blockedDates: { $each: dates } },
         ...(notes !== undefined && { $set: { ...{ host: hostId }, notes } }),
       },
-      { upsert: true, new: true, runValidators: true }
+      { upsert: true, returnDocument: "after", runValidators: true }
     );
 
     res.status(200).json({
@@ -232,7 +232,7 @@ export const unblockDates = async (req: any, res: Response, next: NextFunction):
     const availability = await Availability.findOneAndUpdate(
       { itemId, itemType },
       { $pull: { blockedDates: { $in: dates } } },
-      { new: true }
+      { returnDocument: "after" }
     );
 
     const remaining = availability?.blockedDates || [];
@@ -362,7 +362,7 @@ export const bulkBlock = async (req: any, res: Response, next: NextFunction): Pr
         $set: { host: hostId },
         $addToSet: { blockedDates: { $each: datesToBlock } },
       },
-      { upsert: true, new: true, runValidators: true }
+      { upsert: true, returnDocument: "after", runValidators: true }
     );
 
     res.status(200).json({

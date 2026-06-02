@@ -18,6 +18,10 @@ import destinationRoutes from "./routes/destinationRoutes.js";
 
 const app = express();
 
+// Trust the reverse proxy (Render sets X-Forwarded-For, X-Forwarded-Proto)
+// Required for express-rate-limit to correctly identify client IPs
+app.set("trust proxy", 1);
+
 // ──────────────────────── Security Middleware ────────────────────────
 
 // 1. HTTP security headers (X-Frame-Options, X-XSS-Protection, CSP, etc.)

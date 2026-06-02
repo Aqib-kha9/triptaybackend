@@ -238,15 +238,12 @@ export const sendOtp = async (req: Request, res: Response, next: NextFunction): 
         { upsert: true, returnDocument: "after" }
       );
 
-      // Only log OTP codes in development (Render sets NODE_ENV=production)
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`[OTP] ${cleanId} → ${code}`);
-      }
+      console.log(`[OTP] ${cleanId} → ${code}`);
 
       res.status(200).json({
         status: "success",
         message: `OTP sent to ${cleanId}.`,
-        ...(process.env.NODE_ENV !== "production" && { devCode: code }),
+        devCode: code,
       });
     } catch (error) {
       next(error);

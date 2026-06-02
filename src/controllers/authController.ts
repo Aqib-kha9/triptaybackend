@@ -474,8 +474,8 @@ export const getProfile = async (req: any, res: Response, next: NextFunction): P
           aadharFront: user.aadharFront || "",
           aadharBack: user.aadharBack || "",
           panCardImage: user.panCardImage || "",
-          createdAt: user.createdAt,
-          updatedAt: user.updatedAt,
+          createdAt: (user as any).createdAt,
+          updatedAt: (user as any).updatedAt,
         },
       },
     });
@@ -557,8 +557,8 @@ export const updateProfile = async (req: any, res: Response, next: NextFunction)
           aadharFront: updatedUser.aadharFront || "",
           aadharBack: updatedUser.aadharBack || "",
           panCardImage: updatedUser.panCardImage || "",
-          createdAt: updatedUser.createdAt,
-          updatedAt: updatedUser.updatedAt,
+          createdAt: (updatedUser as any).createdAt,
+          updatedAt: (updatedUser as any).updatedAt,
         },
       },
     });

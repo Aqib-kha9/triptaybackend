@@ -77,12 +77,12 @@ availabilitySchema.index({ blockedDates: 1 });
 // ──────────────────────── Static helpers ────────────────────────
 
 // Format a Date object to YYYY-MM-DD
-availabilitySchema.statics.formatDate = function (date: Date): string {
+function formatDateStatic(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
-};
+}
 
 // Get all dates in a range (inclusive)
 availabilitySchema.statics.dateRange = function (start: string, end: string): string[] {
@@ -90,7 +90,7 @@ availabilitySchema.statics.dateRange = function (start: string, end: string): st
   const current = new Date(start);
   const endDate = new Date(end);
   while (current <= endDate) {
-    dates.push(this.formatDate(current));
+    dates.push(formatDateStatic(current));
     current.setDate(current.getDate() + 1);
   }
   return dates;
@@ -103,7 +103,7 @@ availabilitySchema.statics.weekendsInMonth = function (year: number, month: numb
   while (date.getMonth() === month) {
     const day = date.getDay();
     if (day === 0 || day === 6) {
-      dates.push(this.formatDate(date));
+      dates.push(formatDateStatic(date));
     }
     date.setDate(date.getDate() + 1);
   }
@@ -117,7 +117,7 @@ availabilitySchema.statics.weekdaysInMonth = function (year: number, month: numb
   while (date.getMonth() === month) {
     const day = date.getDay();
     if (day !== 0 && day !== 6) {
-      dates.push(this.formatDate(date));
+      dates.push(formatDateStatic(date));
     }
     date.setDate(date.getDate() + 1);
   }

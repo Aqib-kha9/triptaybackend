@@ -123,18 +123,18 @@ io.on("connection", (socket: Socket) => {
         }
 
         // Create message
-        const message = await Message.create({
+        const message = await (Message.create as any)({
           conversation: conversationId,
           sender: userId,
           type,
           text: text || "",
-          mediaUrl: mediaUrl || null,
-          mediaType: mediaType || null,
-          fileName: fileName || null,
-          fileSize: fileSize || null,
+          mediaUrl: mediaUrl || undefined,
+          mediaType: mediaType || undefined,
+          fileName: fileName || undefined,
+          fileSize: fileSize || undefined,
         });
 
-        await message.populate("sender", "name email");
+        await (message as any).populate("sender", "name email");
 
         // Update conversation
         const displayText = text || (type === "image" ? "📷 Image" : type === "file" ? "📎 File" : "");
@@ -182,7 +182,7 @@ io.on("connection", (socket: Socket) => {
   socket.on("messages:read", async (conversationId: string) => {
     try {
       await Message.updateMany(
-        { conversation: conversationId, sender: { $ne: userId }, isRead: false },
+        { conversation: conversationId, sender: { $ne: userId }, isRead: false } as any,
         { isRead: true, readAt: new Date() }
       );
 

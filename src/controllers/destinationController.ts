@@ -19,7 +19,7 @@ async function ensureUniqueSlug(baseSlug: string, excludeId?: string): Promise<s
   while (true) {
     const query: Record<string, unknown> = { slug };
     if (excludeId) query._id = { $ne: excludeId };
-    const existing = await Destination.findOne(query);
+    const existing = await Destination.findOne(query as any);
     if (!existing) break;
     slug = `${baseSlug}-${counter}`;
     counter++;
@@ -45,12 +45,12 @@ export const getAllDestinations = async (
     }
 
     const [destinations, total] = await Promise.all([
-      Destination.find(filter)
+      Destination.find(filter as any)
         .sort({ popularityScore: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
-      Destination.countDocuments(filter),
+      Destination.countDocuments(filter as any),
     ]);
 
     res.status(200).json({
@@ -80,7 +80,7 @@ export const getDestination = async (
     const destination = await Destination.findOne({
       slug: req.params.slug,
       isActive: true,
-    }).lean();
+    } as any).lean();
 
     if (!destination) {
       res.status(404).json({ status: "fail", message: "Destination not found." });
@@ -175,7 +175,7 @@ export const updateDestination = async (
     const { name, state, city, image, category, coordinates, description, isActive, popularityScore } =
       req.body;
 
-    const destination = await Destination.findById(req.params.id);
+    const destination = await (Destination as any).findById(req.params.id);
     if (!destination) {
       res.status(404).json({ status: "fail", message: "Destination not found." });
       return;
@@ -242,7 +242,7 @@ export const deleteDestination = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const destination = await Destination.findByIdAndDelete(req.params.id);
+    const destination = await (Destination as any).findByIdAndDelete(req.params.id);
 
     if (!destination) {
       res.status(404).json({ status: "fail", message: "Destination not found." });
@@ -278,12 +278,12 @@ export const adminListDestinations = async (
     }
 
     const [destinations, total] = await Promise.all([
-      Destination.find(filter)
+      Destination.find(filter as any)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
-      Destination.countDocuments(filter),
+      Destination.countDocuments(filter as any),
     ]);
 
     res.status(200).json({

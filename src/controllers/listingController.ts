@@ -389,7 +389,7 @@ export const uploadListingMedia = async (req: any, res: Response, next: NextFunc
       listing.media.forEach((m, i) => {
         const wasJustUploaded = uploadedMedia.some((um) => um.publicId === m.publicId);
         if (!wasJustUploaded && m.isCover) {
-          listing.media[i].isCover = false;
+          if (listing.media[i]) listing.media[i].isCover = false;
         }
       });
     }
@@ -435,6 +435,10 @@ export const deleteListingMedia = async (req: any, res: Response, next: NextFunc
     }
 
     const mediaItem = listing.media[mediaIndex];
+    if (!mediaItem) {
+      res.status(404).json({ status: "fail", message: "Media item not found." });
+      return;
+    }
 
     // Delete from Cloudinary
     try {
@@ -447,7 +451,7 @@ export const deleteListingMedia = async (req: any, res: Response, next: NextFunc
     listing.media.splice(mediaIndex, 1);
 
     // If we deleted the cover, set first remaining as cover
-    if (mediaItem.isCover && listing.media.length > 0) {
+    if (mediaItem.isCover && listing.media.length > 0 && listing.media[0]) {
       listing.media[0].isCover = true;
     }
 
@@ -676,10 +680,10 @@ export const browseNearby = async (req: Request, res: Response, next: NextFuncti
     };
 
     const [rawListings, rawActivities] = await Promise.all([
-      Listing.find(listingFilter)
+      Listing.find(listingFilter as any)
         .select("name slug summary propertyType city state country basePrice weekendPrice avgRating totalReviews media coordinates maxGuests bedrooms bathrooms amenities isPetFriendly instantBook")
         .lean(),
-      Activity.find(activityFilter)
+      Activity.find(activityFilter as any)
         .select("name slug summary activityType difficulty city state country basePrice weekendPrice childPrice avgRating totalReviews media coordinates durationHours maxGroupSize minAge included instantBook")
         .lean(),
     ]);

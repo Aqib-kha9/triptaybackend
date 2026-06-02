@@ -436,6 +436,10 @@ export const deleteActivityMedia = async (req: any, res: Response, next: NextFun
     }
 
     const mediaItem = activity.media[mediaIndex];
+    if (!mediaItem) {
+      res.status(404).json({ status: "fail", message: "Media item not found." });
+      return;
+    }
 
     // Delete from Cloudinary
     try {
@@ -448,7 +452,7 @@ export const deleteActivityMedia = async (req: any, res: Response, next: NextFun
     activity.media.splice(mediaIndex, 1);
 
     // If we deleted the cover, set first remaining as cover
-    if (mediaItem.isCover && activity.media.length > 0) {
+    if (mediaItem.isCover && activity.media.length > 0 && activity.media[0]) {
       activity.media[0].isCover = true;
     }
 

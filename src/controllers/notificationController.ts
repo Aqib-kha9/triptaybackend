@@ -69,7 +69,7 @@ export const markAsRead = async (req: any, res: Response, next: NextFunction): P
     const userId = req.user._id || req.user.id;
     const { notificationId } = req.params;
 
-    const notification = await Notification.findOneAndUpdate(
+    const notification = await (Notification as any).findOneAndUpdate(
       { _id: notificationId, recipient: userId },
       { isRead: true, readAt: new Date() },
       { new: true }
@@ -92,7 +92,7 @@ export const markAllAsRead = async (req: any, res: Response, next: NextFunction)
   try {
     const userId = req.user._id || req.user.id;
 
-    await Notification.updateMany(
+    await (Notification as any).updateMany(
       { recipient: userId, isRead: false },
       { isRead: true, readAt: new Date() }
     );
@@ -110,7 +110,7 @@ export const deleteNotification = async (req: any, res: Response, next: NextFunc
     const userId = req.user._id || req.user.id;
     const { notificationId } = req.params;
 
-    const notification = await Notification.findOneAndDelete({
+    const notification = await (Notification as any).findOneAndDelete({
       _id: notificationId,
       recipient: userId,
     });

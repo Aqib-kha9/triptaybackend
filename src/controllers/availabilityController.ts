@@ -82,7 +82,7 @@ export const getAvailability = async (req: any, res: Response, next: NextFunctio
 
     // Verify item belongs to this vendor
     const Model = itemType === "listing" ? Listing : Activity;
-    const item = await Model.findOne({ _id: itemId, host: hostId }).select("_id name").lean();
+    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id name").lean();
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
@@ -158,7 +158,7 @@ export const blockDates = async (req: any, res: Response, next: NextFunction): P
 
     // Verify item belongs to this vendor
     const Model = itemType === "listing" ? Listing : Activity;
-    const item = await Model.findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
@@ -223,7 +223,7 @@ export const unblockDates = async (req: any, res: Response, next: NextFunction):
     }
 
     const Model = itemType === "listing" ? Listing : Activity;
-    const item = await Model.findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
@@ -271,7 +271,7 @@ export const bulkBlock = async (req: any, res: Response, next: NextFunction): Pr
     }
 
     const Model = itemType === "listing" ? Listing : Activity;
-    const item = await Model.findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
@@ -398,7 +398,7 @@ export const clearBlockedDates = async (req: any, res: Response, next: NextFunct
     }
 
     const Model = itemType === "listing" ? Listing : Activity;
-    const item = await Model.findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;

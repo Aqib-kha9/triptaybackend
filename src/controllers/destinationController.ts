@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import Destination from "../models/Destination.js";
+import { prisma } from "../config/db.js";
 import cloudinary from "../config/cloudinary.js";
 import { validateMagicBytes } from "../utils/validateMagicBytes.js";
 
@@ -17,14 +17,33 @@ async function ensureUniqueSlug(baseSlug: string, excludeId?: string): Promise<s
   let slug = baseSlug;
   let counter = 1;
   while (true) {
-    const query: Record<string, unknown> = { slug };
-    if (excludeId) query._id = { $ne: excludeId };
-    const existing = await Destination.findOne(query as any);
+    const existing = await prisma.destination.findFirst({
+      where: {
+        slug,
+        id: excludeId ? { not: excludeId } : undefined,
+      },
+    });
     if (!existing) break;
     slug = `${baseSlug}-${counter}`;
     counter++;
   }
   return slug;
+}
+
+// Helper to map flat database lat/lng to frontend-compatible coordinates object
+function mapDestinationResponse(dest: any) {
+  if (!dest) return null;
+  const mapped = {
+    ...dest,
+    _id: dest.id,
+    coordinates: {
+      lat: dest.lat,
+      lng: dest.lng,
+    },
+  };
+  delete mapped.lat;
+  delete mapped.lng;
+  return mapped;
 }
 
 // ─── GET /api/destinations — public, paginated, sorted by popularity ───
@@ -39,24 +58,29 @@ export const getAllDestinations = async (
     const category = req.query.category as string | undefined;
     const skip = (page - 1) * limit;
 
-    const filter: Record<string, unknown> = { isActive: true };
+    const filter: any = { isActive: true };
     if (category && ["Nature", "Adventure", "Historical", "Spiritual"].includes(category)) {
       filter.category = category;
     }
 
     const [destinations, total] = await Promise.all([
-      Destination.find(filter as any)
-        .sort({ popularityScore: -1, createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Destination.countDocuments(filter as any),
+      prisma.destination.findMany({
+        where: filter,
+        orderBy: [{ popularityScore: "desc" }, { createdAt: "desc" }],
+        skip,
+        take: limit,
+      }),
+      prisma.destination.count({
+        where: filter,
+      }),
     ]);
+
+    const mapped = destinations.map(mapDestinationResponse);
 
     res.status(200).json({
       status: "success",
       data: {
-        destinations,
+        destinations: mapped,
         pagination: {
           page,
           limit,
@@ -72,15 +96,17 @@ export const getAllDestinations = async (
 
 // ─── GET /api/destinations/:slug — public, single destination by slug ───
 export const getDestination = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const destination = await Destination.findOne({
-      slug: req.params.slug,
-      isActive: true,
-    } as any).lean();
+    const destination = await prisma.destination.findFirst({
+      where: {
+        slug: req.params.slug,
+        isActive: true,
+      },
+    });
 
     if (!destination) {
       res.status(404).json({ status: "fail", message: "Destination not found." });
@@ -89,7 +115,7 @@ export const getDestination = async (
 
     res.status(200).json({
       status: "success",
-      data: { destination },
+      data: { destination: mapDestinationResponse(destination) },
     });
   } catch (err) {
     next(err);
@@ -136,25 +162,28 @@ export const createDestination = async (
     const baseSlug = generateSlug(name);
     const slug = await ensureUniqueSlug(baseSlug);
 
-    const destination = await Destination.create({
-      name,
-      slug,
-      state,
-      city,
-      image,
-      category,
-      coordinates,
-      description: description || "",
-      popularityScore: 0,
+    const destination = await prisma.destination.create({
+      data: {
+        name,
+        slug,
+        state,
+        city,
+        image,
+        category,
+        lat: coordinates.lat,
+        lng: coordinates.lng,
+        description: description || "",
+        popularityScore: 0,
+      },
     });
 
     res.status(201).json({
       status: "success",
-      data: { destination },
+      data: { destination: mapDestinationResponse(destination) },
     });
   } catch (err: any) {
-    // Handle duplicate slug race condition
-    if (err.code === 11000) {
+    // Handle duplicate slug race condition (P2002 in Prisma)
+    if (err.code === "P2002") {
       res.status(409).json({
         status: "fail",
         message: "A destination with this name/slug already exists.",
@@ -175,21 +204,24 @@ export const updateDestination = async (
     const { name, state, city, image, category, coordinates, description, isActive, popularityScore } =
       req.body;
 
-    const destination = await (Destination as any).findById(req.params.id);
+    const destination = await prisma.destination.findUnique({
+      where: { id: req.params.id },
+    });
     if (!destination) {
       res.status(404).json({ status: "fail", message: "Destination not found." });
       return;
     }
 
-    // Update fields if provided
+    const updateData: any = {};
+
     if (name !== undefined) {
-      destination.name = name;
+      updateData.name = name;
       const newSlug = generateSlug(name);
-      destination.slug = await ensureUniqueSlug(newSlug, destination._id as string);
+      updateData.slug = await ensureUniqueSlug(newSlug, destination.id);
     }
-    if (state !== undefined) destination.state = state;
-    if (city !== undefined) destination.city = city;
-    if (image !== undefined) destination.image = image;
+    if (state !== undefined) updateData.state = state;
+    if (city !== undefined) updateData.city = city;
+    if (image !== undefined) updateData.image = image;
     if (category !== undefined) {
       if (!["Nature", "Adventure", "Historical", "Spiritual"].includes(category)) {
         res.status(400).json({
@@ -198,7 +230,7 @@ export const updateDestination = async (
         });
         return;
       }
-      destination.category = category;
+      updateData.category = category;
     }
     if (coordinates !== undefined) {
       if (
@@ -211,20 +243,24 @@ export const updateDestination = async (
         });
         return;
       }
-      destination.coordinates = coordinates;
+      updateData.lat = coordinates.lat;
+      updateData.lng = coordinates.lng;
     }
-    if (description !== undefined) destination.description = description;
-    if (isActive !== undefined) destination.isActive = Boolean(isActive);
-    if (popularityScore !== undefined) destination.popularityScore = popularityScore;
+    if (description !== undefined) updateData.description = description;
+    if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+    if (popularityScore !== undefined) updateData.popularityScore = popularityScore;
 
-    await destination.save();
+    const updated = await prisma.destination.update({
+      where: { id: req.params.id },
+      data: updateData,
+    });
 
     res.status(200).json({
       status: "success",
-      data: { destination },
+      data: { destination: mapDestinationResponse(updated) },
     });
   } catch (err: any) {
-    if (err.code === 11000) {
+    if (err.code === "P2002") {
       res.status(409).json({
         status: "fail",
         message: "A destination with this slug already exists.",
@@ -242,12 +278,18 @@ export const deleteDestination = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const destination = await (Destination as any).findByIdAndDelete(req.params.id);
+    const destination = await prisma.destination.findUnique({
+      where: { id: req.params.id },
+    });
 
     if (!destination) {
       res.status(404).json({ status: "fail", message: "Destination not found." });
       return;
     }
+
+    await prisma.destination.delete({
+      where: { id: req.params.id },
+    });
 
     res.status(200).json({
       status: "success",
@@ -271,25 +313,30 @@ export const adminListDestinations = async (
     const includeInactive = req.query.includeInactive === "true";
     const skip = (page - 1) * limit;
 
-    const filter: Record<string, unknown> = {};
+    const filter: any = {};
     if (!includeInactive) filter.isActive = true;
     if (category && ["Nature", "Adventure", "Historical", "Spiritual"].includes(category)) {
       filter.category = category;
     }
 
     const [destinations, total] = await Promise.all([
-      Destination.find(filter as any)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Destination.countDocuments(filter as any),
+      prisma.destination.findMany({
+        where: filter,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.destination.count({
+        where: filter,
+      }),
     ]);
+
+    const mapped = destinations.map(mapDestinationResponse);
 
     res.status(200).json({
       status: "success",
       data: {
-        destinations,
+        destinations: mapped,
         pagination: {
           page,
           limit,

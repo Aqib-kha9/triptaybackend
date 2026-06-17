@@ -1,7 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { Availability } from "../models/Availability.js";
-import { Listing } from "../models/Listing.js";
-import { Activity } from "../models/Activity.js";
+import { prisma } from "../config/db.js";
 
 // ──────────────────────── Helpers ────────────────────────
 
@@ -26,32 +24,54 @@ export const getVendorItems = async (req: any, res: Response, next: NextFunction
     const hostId = req.user?.id || req.user?._id;
 
     const [listings, activities] = await Promise.all([
-      Listing.find({ host: hostId })
-        .select("name propertyType city media status")
-        .sort({ updatedAt: -1 })
-        .lean(),
-      Activity.find({ host: hostId })
-        .select("name activityType city media status")
-        .sort({ updatedAt: -1 })
-        .lean(),
+      prisma.listing.findMany({
+        where: { hostId },
+        select: {
+          id: true,
+          name: true,
+          propertyType: true,
+          city: true,
+          media: true,
+          status: true,
+        },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.activity.findMany({
+        where: { hostId },
+        select: {
+          id: true,
+          name: true,
+          activityType: true,
+          city: true,
+          media: true,
+          status: true,
+        },
+        orderBy: { updatedAt: "desc" },
+      }),
     ]);
 
     const items = [
       ...listings.map((l: any) => ({
-        _id: l._id,
+        _id: l.id,
         name: l.name,
         type: "listing" as const,
         subtype: l.propertyType,
         city: l.city,
-        coverImage: l.media?.find((m: any) => m.isCover)?.url || l.media?.[0]?.url || null,
+        coverImage:
+          (Array.isArray(l.media) ? l.media.find((m: any) => m.isCover)?.url : null) ||
+          (Array.isArray(l.media) ? l.media[0]?.url : null) ||
+          null,
       })),
       ...activities.map((a: any) => ({
-        _id: a._id,
+        _id: a.id,
         name: a.name,
         type: "activity" as const,
         subtype: a.activityType,
         city: a.city,
-        coverImage: a.media?.find((m: any) => m.isCover)?.url || a.media?.[0]?.url || null,
+        coverImage:
+          (Array.isArray(a.media) ? a.media.find((m: any) => m.isCover)?.url : null) ||
+          (Array.isArray(a.media) ? a.media[0]?.url : null) ||
+          null,
       })),
     ];
 
@@ -81,14 +101,19 @@ export const getAvailability = async (req: any, res: Response, next: NextFunctio
     }
 
     // Verify item belongs to this vendor
-    const Model = itemType === "listing" ? Listing : Activity;
-    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id name").lean();
+    const item =
+      itemType === "listing"
+        ? await prisma.listing.findFirst({ where: { id: itemId, hostId }, select: { id: true, name: true } })
+        : await prisma.activity.findFirst({ where: { id: itemId, hostId }, select: { id: true, name: true } });
+
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
     }
 
-    let availability = await Availability.findOne({ itemId, itemType }).lean();
+    const availability = await prisma.availability.findUnique({
+      where: { itemId_itemType: { itemId, itemType } },
+    });
 
     if (!availability) {
       // Return empty availability — no blocked dates yet
@@ -98,7 +123,7 @@ export const getAvailability = async (req: any, res: Response, next: NextFunctio
           availability: {
             itemId,
             itemType,
-            itemName: (item as any).name,
+            itemName: item.name,
             blockedDates: [],
             notes: null,
           },
@@ -113,7 +138,7 @@ export const getAvailability = async (req: any, res: Response, next: NextFunctio
         availability: {
           itemId: availability.itemId,
           itemType: availability.itemType,
-          itemName: (item as any).name,
+          itemName: item.name,
           blockedDates: availability.blockedDates,
           notes: availability.notes || null,
           updatedAt: availability.updatedAt,
@@ -157,23 +182,39 @@ export const blockDates = async (req: any, res: Response, next: NextFunction): P
     }
 
     // Verify item belongs to this vendor
-    const Model = itemType === "listing" ? Listing : Activity;
-    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item =
+      itemType === "listing"
+        ? await prisma.listing.findFirst({ where: { id: itemId, hostId }, select: { id: true } })
+        : await prisma.activity.findFirst({ where: { id: itemId, hostId }, select: { id: true } });
+
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
     }
 
-    // Upsert: add dates to blockedDates, deduplicate
-    const availability = await Availability.findOneAndUpdate(
-      { itemId, itemType },
-      {
-        $set: { host: hostId },
-        $addToSet: { blockedDates: { $each: dates } },
-        ...(notes !== undefined && { $set: { ...{ host: hostId }, notes } }),
+    // Read current blocked dates
+    const existing = await prisma.availability.findUnique({
+      where: { itemId_itemType: { itemId, itemType } },
+    });
+    const currentBlocked = existing ? existing.blockedDates : [];
+    const updatedBlocked = Array.from(new Set([...currentBlocked, ...dates]));
+
+    // Upsert
+    const availability = await prisma.availability.upsert({
+      where: { itemId_itemType: { itemId, itemType } },
+      create: {
+        itemId,
+        itemType,
+        hostId,
+        blockedDates: updatedBlocked,
+        notes: notes !== undefined ? notes : null,
       },
-      { upsert: true, returnDocument: "after", runValidators: true }
-    );
+      update: {
+        hostId,
+        blockedDates: updatedBlocked,
+        ...(notes !== undefined && { notes }),
+      },
+    });
 
     res.status(200).json({
       status: "success",
@@ -222,20 +263,33 @@ export const unblockDates = async (req: any, res: Response, next: NextFunction):
       return;
     }
 
-    const Model = itemType === "listing" ? Listing : Activity;
-    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item =
+      itemType === "listing"
+        ? await prisma.listing.findFirst({ where: { id: itemId, hostId }, select: { id: true } })
+        : await prisma.activity.findFirst({ where: { id: itemId, hostId }, select: { id: true } });
+
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
     }
 
-    const availability = await Availability.findOneAndUpdate(
-      { itemId, itemType },
-      { $pull: { blockedDates: { $in: dates } } },
-      { returnDocument: "after" }
-    );
+    const existing = await prisma.availability.findUnique({
+      where: { itemId_itemType: { itemId, itemType } },
+    });
 
-    const remaining = availability?.blockedDates || [];
+    let remaining: string[] = [];
+    let notes: string | null = null;
+
+    if (existing) {
+      remaining = existing.blockedDates.filter((d) => !dates.includes(d));
+      notes = existing.notes;
+      await prisma.availability.update({
+        where: { itemId_itemType: { itemId, itemType } },
+        data: {
+          blockedDates: remaining,
+        },
+      });
+    }
 
     res.status(200).json({
       status: "success",
@@ -245,7 +299,7 @@ export const unblockDates = async (req: any, res: Response, next: NextFunction):
           itemId,
           itemType,
           blockedDates: remaining,
-          notes: availability?.notes || null,
+          notes: notes || null,
         },
       },
     });
@@ -270,8 +324,11 @@ export const bulkBlock = async (req: any, res: Response, next: NextFunction): Pr
       return;
     }
 
-    const Model = itemType === "listing" ? Listing : Activity;
-    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item =
+      itemType === "listing"
+        ? await prisma.listing.findFirst({ where: { id: itemId, hostId }, select: { id: true } })
+        : await prisma.activity.findFirst({ where: { id: itemId, hostId }, select: { id: true } });
+
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
@@ -356,14 +413,25 @@ export const bulkBlock = async (req: any, res: Response, next: NextFunction): Pr
       return;
     }
 
-    const availability = await Availability.findOneAndUpdate(
-      { itemId, itemType },
-      {
-        $set: { host: hostId },
-        $addToSet: { blockedDates: { $each: datesToBlock } },
+    const existing = await prisma.availability.findUnique({
+      where: { itemId_itemType: { itemId, itemType } },
+    });
+    const currentBlocked = existing ? existing.blockedDates : [];
+    const updatedBlocked = Array.from(new Set([...currentBlocked, ...datesToBlock]));
+
+    const availability = await prisma.availability.upsert({
+      where: { itemId_itemType: { itemId, itemType } },
+      create: {
+        itemId,
+        itemType,
+        hostId,
+        blockedDates: updatedBlocked,
       },
-      { upsert: true, returnDocument: "after", runValidators: true }
-    );
+      update: {
+        hostId,
+        blockedDates: updatedBlocked,
+      },
+    });
 
     res.status(200).json({
       status: "success",
@@ -397,18 +465,31 @@ export const clearBlockedDates = async (req: any, res: Response, next: NextFunct
       return;
     }
 
-    const Model = itemType === "listing" ? Listing : Activity;
-    const item = await (Model as any).findOne({ _id: itemId, host: hostId }).select("_id").lean();
+    const item =
+      itemType === "listing"
+        ? await prisma.listing.findFirst({ where: { id: itemId, hostId }, select: { id: true } })
+        : await prisma.activity.findFirst({ where: { id: itemId, hostId }, select: { id: true } });
+
     if (!item) {
       res.status(404).json({ status: "fail", message: `${itemType === "listing" ? "Listing" : "Activity"} not found or not owned by you.` });
       return;
     }
 
-    await Availability.findOneAndUpdate(
-      { itemId, itemType },
-      { $set: { blockedDates: [], host: hostId } },
-      { upsert: true }
-    );
+    await prisma.availability.upsert({
+      where: { itemId_itemType: { itemId, itemType } },
+      create: {
+        itemId,
+        itemType,
+        hostId,
+        blockedDates: [],
+        notes: null,
+      },
+      update: {
+        blockedDates: [],
+        hostId,
+        notes: null,
+      },
+    });
 
     res.status(200).json({
       status: "success",
@@ -425,4 +506,4 @@ export const clearBlockedDates = async (req: any, res: Response, next: NextFunct
   } catch (error) {
     next(error);
   }
-};
+};

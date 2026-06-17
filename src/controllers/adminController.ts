@@ -1,9 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { User } from "../models/User.js";
-import { Listing } from "../models/Listing.js";
-import { Activity } from "../models/Activity.js";
-import { Testimonial } from "../models/Testimonial.js";
+import bcrypt from "bcryptjs";
+import { prisma } from "../config/db.js";
 
 // ──────────────────────── Helper ────────────────────────
 
@@ -16,7 +14,7 @@ const signToken = (id: string, email: string, role: string): string => {
 };
 
 const sendTokenResponse = (user: any, statusCode: number, res: Response) => {
-  const token = signToken(user._id || user.id, user.email, user.role);
+  const token = signToken(user.id, user.email, user.role);
 
   const cookieOptions = {
     expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
@@ -27,7 +25,7 @@ const sendTokenResponse = (user: any, statusCode: number, res: Response) => {
 
   res.cookie("admin_token", token, cookieOptions);
 
-  const userObj = user.toObject ? user.toObject() : { ...user };
+  const userObj = { ...user, _id: user.id };
   delete userObj.password;
 
   res.status(statusCode).json({
@@ -59,10 +57,10 @@ export const adminLogin = async (
       return;
     }
 
-    // Find user by email, explicitly include password for comparison
-    const user = await User.findOne({ email: email.toLowerCase().trim() }).select(
-      "+password"
-    );
+    // Find user by email
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() }
+    });
 
     if (!user) {
       res
@@ -83,7 +81,7 @@ export const adminLogin = async (
     }
 
     // Verify password
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       res
         .status(401)
@@ -124,7 +122,9 @@ export const adminMe = async (
     }
 
     // Reload from DB to get fresh data
-    const admin = await User.findById(req.user._id || req.user.id).select("-password");
+    const admin = await prisma.user.findUnique({
+      where: { id: req.user.id }
+    });
     if (!admin) {
       res
         .status(401)
@@ -132,9 +132,12 @@ export const adminMe = async (
       return;
     }
 
+    const adminObj = { ...admin, _id: admin.id };
+    delete (adminObj as any).password;
+
     res.status(200).json({
       status: "success",
-      data: { user: admin },
+      data: { user: adminObj },
     });
   } catch (error) {
     next(error);
@@ -177,24 +180,24 @@ export const listKycApplications = async (
     const { status } = req.query;
 
     // Build query: only vendor/dual-mode users who submitted KYC
-    const query: any = {
-      role: { $in: ["Vendor", "Dual Mode"] },
-      kycStatus: { $nin: ["Not Submitted"] },
+    const filter: any = {
+      role: { in: ["Vendor", "Dual Mode"] },
+      kycStatus: { not: "Not Submitted" },
     };
 
     if (status && ["Pending", "Approved", "Rejected"].includes(status as string)) {
-      query.kycStatus = status as string;
+      filter.kycStatus = status as string;
     }
 
-    const users = await User.find(query)
-      .select("-password -__v")
-      .sort({ updatedAt: -1 })
-      .lean();
+    const users = await prisma.user.findMany({
+      where: filter,
+      orderBy: { updatedAt: "desc" },
+    });
 
     // Transform to match the admin panel's expected shape
     const applications = users.map((user: any) => ({
-      _id: user._id,
-      id: user._id,
+      _id: user.id,
+      id: user.id,
       name: user.name,
       email: user.email,
       phone: user.phone || "—",
@@ -241,7 +244,9 @@ export const approveKyc = async (
   try {
     const { userId } = req.params;
 
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
     if (!user) {
       res.status(404).json({ status: "fail", message: "User not found." });
       return;
@@ -255,28 +260,28 @@ export const approveKyc = async (
       return;
     }
 
-    user.kycStatus = "Approved";
-    // Ensure they have Vendor role for dashboard access
-    if (user.role === "Guest") {
-      user.role = "Vendor";
-    }
-    await user.save();
+    const updatedRole = user.role === "Guest" ? "Vendor" : user.role;
 
-    const userObj = user.toObject();
-    delete (userObj as any).password;
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        kycStatus: "Approved",
+        role: updatedRole,
+      }
+    });
 
     res.status(200).json({
       status: "success",
-      message: `${user.name}'s KYC has been approved.`,
+      message: `${updated.name}'s KYC has been approved.`,
       data: {
         application: {
-          _id: user._id,
-          id: user._id,
-          name: user.name,
-          email: user.email,
+          _id: updated.id,
+          id: updated.id,
+          name: updated.name,
+          email: updated.email,
           status: "Approved",
           kycStatus: "Approved",
-          role: user.role,
+          role: updated.role,
         },
       },
     });
@@ -298,7 +303,9 @@ export const rejectKyc = async (
   try {
     const { userId } = req.params;
 
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
     if (!user) {
       res.status(404).json({ status: "fail", message: "User not found." });
       return;
@@ -312,21 +319,20 @@ export const rejectKyc = async (
       return;
     }
 
-    user.kycStatus = "Rejected";
-    await user.save();
-
-    const userObj = user.toObject();
-    delete (userObj as any).password;
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { kycStatus: "Rejected" }
+    });
 
     res.status(200).json({
       status: "success",
-      message: `${user.name}'s KYC has been rejected.`,
+      message: `${updated.name}'s KYC has been rejected.`,
       data: {
         application: {
-          _id: user._id,
-          id: user._id,
-          name: user.name,
-          email: user.email,
+          _id: updated.id,
+          id: updated.id,
+          name: updated.name,
+          email: updated.email,
           status: "Rejected",
           kycStatus: "Rejected",
         },
@@ -356,28 +362,47 @@ export const listAllListings = async (
     const status = (req.query.status as string) || "";
 
     // Build query
-    const query: any = {};
+    const filter: any = {};
 
     if (status && ["draft", "published", "unlisted", "rejected"].includes(status)) {
-      query.status = status;
+      filter.status = status;
     }
 
     if (search) {
-      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      query.$or = [
-        { name: { $regex: escaped, $options: "i" } },
-        { city: { $regex: escaped, $options: "i" } },
-        { state: { $regex: escaped, $options: "i" } },
+      filter.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { city: { contains: search, mode: "insensitive" } },
+        { state: { contains: search, mode: "insensitive" } },
       ];
     }
 
-    const total = await Listing.countDocuments(query);
-    const listings = await Listing.find(query)
-      .populate("host", "name email phone avatar")
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean();
+    const total = await prisma.listing.count({ where: filter });
+    const rawListings = await prisma.listing.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    // Populate host manually
+    const hostIds = Array.from(new Set(rawListings.map(l => l.hostId)));
+    const hosts = await prisma.user.findMany({
+      where: { id: { in: hostIds } },
+      select: { id: true, name: true, email: true, phone: true, avatar: true }
+    });
+    const hostMap = new Map(hosts.map(h => [h.id, { _id: h.id, id: h.id, name: h.name, email: h.email, phone: h.phone, avatar: h.avatar }]));
+
+    const listings = rawListings.map(l => {
+      const mapped = {
+        ...l,
+        _id: l.id,
+        host: hostMap.get(l.hostId) || null,
+        coordinates: { lat: l.lat, lng: l.lng }
+      };
+      delete (mapped as any).lat;
+      delete (mapped as any).lng;
+      return mapped;
+    });
 
     const totalPages = Math.ceil(total / limit);
 
@@ -407,18 +432,32 @@ export const getListingDetail = async (
   try {
     const { listingId } = req.params;
 
-    const listing = await Listing.findById(listingId)
-      .populate("host", "name email phone avatar role kycStatus")
-      .lean();
+    const listing = await prisma.listing.findUnique({
+      where: { id: listingId }
+    });
 
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
     }
 
+    const host = await prisma.user.findUnique({
+      where: { id: listing.hostId },
+      select: { id: true, name: true, email: true, phone: true, avatar: true, role: true, kycStatus: true }
+    });
+
+    const mapped = {
+      ...listing,
+      _id: listing.id,
+      host: host ? { _id: host.id, id: host.id, name: host.name, email: host.email, phone: host.phone, avatar: host.avatar, role: host.role, kycStatus: host.kycStatus } : null,
+      coordinates: { lat: listing.lat, lng: listing.lng }
+    };
+    delete (mapped as any).lat;
+    delete (mapped as any).lng;
+
     res.status(200).json({
       status: "success",
-      data: { listing },
+      data: { listing: mapped },
     });
   } catch (error) {
     next(error);
@@ -448,11 +487,16 @@ export const toggleListingStatus = async (
       return;
     }
 
-    const listing = await Listing.findById(listingId);
+    const listing = await prisma.listing.findUnique({
+      where: { id: listingId }
+    });
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
     }
+
+    let updatedIsActive = listing.isActive;
+    let updatedStatus = listing.status;
 
     if (action === "suspend") {
       if (!listing.isActive) {
@@ -462,9 +506,9 @@ export const toggleListingStatus = async (
         });
         return;
       }
-      listing.isActive = false;
+      updatedIsActive = false;
       if (listing.status === "published") {
-        listing.status = "unlisted";
+        updatedStatus = "unlisted";
       }
     } else {
       if (listing.isActive) {
@@ -474,27 +518,32 @@ export const toggleListingStatus = async (
         });
         return;
       }
-      listing.isActive = true;
-      // Restore status if it was unlisted due to suspension (only if no other reason)
+      updatedIsActive = true;
       if (listing.status === "unlisted") {
-        listing.status = "published";
+        updatedStatus = "published";
       }
     }
 
-    await listing.save();
+    const updated = await prisma.listing.update({
+      where: { id: listingId },
+      data: {
+        isActive: updatedIsActive,
+        status: updatedStatus,
+      }
+    });
 
     res.status(200).json({
       status: "success",
       message:
         action === "suspend"
-          ? `"${listing.name}" has been suspended.`
-          : `"${listing.name}" has been activated.`,
+          ? `"${updated.name}" has been suspended.`
+          : `"${updated.name}" has been activated.`,
       data: {
         listing: {
-          _id: listing._id,
-          name: listing.name,
-          status: listing.status,
-          isActive: listing.isActive,
+          _id: updated.id,
+          name: updated.name,
+          status: updated.status,
+          isActive: updated.isActive,
         },
       },
     });
@@ -526,7 +575,9 @@ export const changeListingStatus = async (
       return;
     }
 
-    const listing = await Listing.findById(listingId);
+    const listing = await prisma.listing.findUnique({
+      where: { id: listingId }
+    });
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
@@ -541,37 +592,34 @@ export const changeListingStatus = async (
     }
 
     const oldStatus = listing.status;
-    listing.status = newStatus;
+    let updatedIsActive = listing.isActive;
 
     // Auto-adjust isActive based on status change
     if (newStatus === "published") {
-      listing.isActive = true;
+      updatedIsActive = true;
     } else if (newStatus === "rejected" || newStatus === "draft") {
-      listing.isActive = false;
+      updatedIsActive = false;
     }
 
-    if (adminNotes !== undefined) {
-      listing.adminNotes = adminNotes?.trim() || undefined;
-    }
-
-    await listing.save();
-
-    const statusLabels: Record<string, string> = {
-      published: "Published",
-      draft: "Moved to Draft",
-      rejected: "Rejected",
-    };
+    const updated = await prisma.listing.update({
+      where: { id: listingId },
+      data: {
+        status: newStatus,
+        isActive: updatedIsActive,
+        adminNotes: adminNotes !== undefined ? adminNotes?.trim() || null : undefined,
+      }
+    });
 
     res.status(200).json({
       status: "success",
-      message: `"${listing.name}" status changed from ${oldStatus} → ${newStatus}.`,
+      message: `"${updated.name}" status changed from ${oldStatus} → ${newStatus}.`,
       data: {
         listing: {
-          _id: listing._id,
-          name: listing.name,
-          status: listing.status,
-          isActive: listing.isActive,
-          adminNotes: listing.adminNotes,
+          _id: updated.id,
+          name: updated.name,
+          status: updated.status,
+          isActive: updated.isActive,
+          adminNotes: updated.adminNotes,
           oldStatus,
         },
       },
@@ -602,28 +650,47 @@ export const listAllActivities = async (
     const status = (req.query.status as string) || "";
 
     // Build query
-    const query: any = {};
+    const filter: any = {};
 
     if (status && ["draft", "published", "unlisted", "rejected"].includes(status)) {
-      query.status = status;
+      filter.status = status;
     }
 
     if (search) {
-      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      query.$or = [
-        { name: { $regex: escaped, $options: "i" } },
-        { city: { $regex: escaped, $options: "i" } },
-        { state: { $regex: escaped, $options: "i" } },
+      filter.OR = [
+        { name: { contains: search, mode: "insensitive" } },
+        { city: { contains: search, mode: "insensitive" } },
+        { state: { contains: search, mode: "insensitive" } },
       ];
     }
 
-    const total = await Activity.countDocuments(query);
-    const activities = await Activity.find(query)
-      .populate("host", "name email phone avatar")
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean();
+    const total = await prisma.activity.count({ where: filter });
+    const rawActivities = await prisma.activity.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    // Populate host manually
+    const hostIds = Array.from(new Set(rawActivities.map(a => a.hostId)));
+    const hosts = await prisma.user.findMany({
+      where: { id: { in: hostIds } },
+      select: { id: true, name: true, email: true, phone: true, avatar: true }
+    });
+    const hostMap = new Map(hosts.map(h => [h.id, { _id: h.id, id: h.id, name: h.name, email: h.email, phone: h.phone, avatar: h.avatar }]));
+
+    const activities = rawActivities.map(a => {
+      const mapped = {
+        ...a,
+        _id: a.id,
+        host: hostMap.get(a.hostId) || null,
+        coordinates: { lat: a.lat, lng: a.lng }
+      };
+      delete (mapped as any).lat;
+      delete (mapped as any).lng;
+      return mapped;
+    });
 
     const totalPages = Math.ceil(total / limit);
 
@@ -653,18 +720,32 @@ export const getActivityDetail = async (
   try {
     const { activityId } = req.params;
 
-    const activity = await Activity.findById(activityId)
-      .populate("host", "name email phone avatar role kycStatus")
-      .lean();
+    const activity = await prisma.activity.findUnique({
+      where: { id: activityId }
+    });
 
     if (!activity) {
       res.status(404).json({ status: "fail", message: "Activity not found." });
       return;
     }
 
+    const host = await prisma.user.findUnique({
+      where: { id: activity.hostId },
+      select: { id: true, name: true, email: true, phone: true, avatar: true, role: true, kycStatus: true }
+    });
+
+    const mapped = {
+      ...activity,
+      _id: activity.id,
+      host: host ? { _id: host.id, id: host.id, name: host.name, email: host.email, phone: host.phone, avatar: host.avatar, role: host.role, kycStatus: host.kycStatus } : null,
+      coordinates: { lat: activity.lat, lng: activity.lng }
+    };
+    delete (mapped as any).lat;
+    delete (mapped as any).lng;
+
     res.status(200).json({
       status: "success",
-      data: { activity },
+      data: { activity: mapped },
     });
   } catch (error) {
     next(error);
@@ -694,11 +775,16 @@ export const toggleActivityStatus = async (
       return;
     }
 
-    const activity = await Activity.findById(activityId);
+    const activity = await prisma.activity.findUnique({
+      where: { id: activityId }
+    });
     if (!activity) {
       res.status(404).json({ status: "fail", message: "Activity not found." });
       return;
     }
+
+    let updatedIsActive = activity.isActive;
+    let updatedStatus = activity.status;
 
     if (action === "suspend") {
       if (!activity.isActive) {
@@ -708,9 +794,9 @@ export const toggleActivityStatus = async (
         });
         return;
       }
-      activity.isActive = false;
+      updatedIsActive = false;
       if (activity.status === "published") {
-        activity.status = "unlisted";
+        updatedStatus = "unlisted";
       }
     } else {
       if (activity.isActive) {
@@ -720,27 +806,32 @@ export const toggleActivityStatus = async (
         });
         return;
       }
-      activity.isActive = true;
-      // Restore status if it was unlisted due to suspension (only if no other reason)
+      updatedIsActive = true;
       if (activity.status === "unlisted") {
-        activity.status = "published";
+        updatedStatus = "published";
       }
     }
 
-    await activity.save();
+    const updated = await prisma.activity.update({
+      where: { id: activityId },
+      data: {
+        isActive: updatedIsActive,
+        status: updatedStatus,
+      }
+    });
 
     res.status(200).json({
       status: "success",
       message:
         action === "suspend"
-          ? `"${activity.name}" has been suspended.`
-          : `"${activity.name}" has been activated.`,
+          ? `"${updated.name}" has been suspended.`
+          : `"${updated.name}" has been activated.`,
       data: {
         activity: {
-          _id: activity._id,
-          name: activity.name,
-          status: activity.status,
-          isActive: activity.isActive,
+          _id: updated.id,
+          name: updated.name,
+          status: updated.status,
+          isActive: updated.isActive,
         },
       },
     });
@@ -772,7 +863,9 @@ export const changeActivityStatus = async (
       return;
     }
 
-    const activity = await Activity.findById(activityId);
+    const activity = await prisma.activity.findUnique({
+      where: { id: activityId }
+    });
     if (!activity) {
       res.status(404).json({ status: "fail", message: "Activity not found." });
       return;
@@ -787,37 +880,34 @@ export const changeActivityStatus = async (
     }
 
     const oldStatus = activity.status;
-    activity.status = newStatus;
+    let updatedIsActive = activity.isActive;
 
     // Auto-adjust isActive based on status change
     if (newStatus === "published") {
-      activity.isActive = true;
+      updatedIsActive = true;
     } else if (newStatus === "rejected" || newStatus === "draft") {
-      activity.isActive = false;
+      updatedIsActive = false;
     }
 
-    if (adminNotes !== undefined) {
-      activity.adminNotes = adminNotes?.trim() || undefined;
-    }
-
-    await activity.save();
-
-    const statusLabels: Record<string, string> = {
-      published: "Published",
-      draft: "Moved to Draft",
-      rejected: "Rejected",
-    };
+    const updated = await prisma.activity.update({
+      where: { id: activityId },
+      data: {
+        status: newStatus,
+        isActive: updatedIsActive,
+        adminNotes: adminNotes !== undefined ? adminNotes?.trim() || null : undefined,
+      }
+    });
 
     res.status(200).json({
       status: "success",
-      message: `"${activity.name}" status changed from ${oldStatus} → ${newStatus}.`,
+      message: `"${updated.name}" status changed from ${oldStatus} → ${newStatus}.`,
       data: {
         activity: {
-          _id: activity._id,
-          name: activity.name,
-          status: activity.status,
-          isActive: activity.isActive,
-          adminNotes: activity.adminNotes,
+          _id: updated.id,
+          name: updated.name,
+          status: updated.status,
+          isActive: updated.isActive,
+          adminNotes: updated.adminNotes,
           oldStatus,
         },
       },
@@ -833,7 +923,7 @@ export const changeActivityStatus = async (
 
 // GET /api/admin/users — list all users with role filter, search, pagination
 export const listAllUsers = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
@@ -842,32 +932,36 @@ export const listAllUsers = async (
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit as string, 10) || 10));
 
-    const filter: any = { role: { $ne: "Admin" } };
+    const filter: any = { role: { not: "Admin" } };
 
     if (role && ["Guest", "Vendor", "Dual Mode"].includes(role as string)) {
       filter.role = role;
     }
 
     if ((search as string).trim()) {
-      const term = (search as string).trim();
-      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      filter.$or = [
-        { name: { $regex: escaped, $options: "i" } },
-        { email: { $regex: escaped, $options: "i" } },
-        { phone: { $regex: escaped, $options: "i" } },
+      filter.OR = [
+        { name: { contains: search as string, mode: "insensitive" } },
+        { email: { contains: search as string, mode: "insensitive" } },
+        { phone: { contains: search as string, mode: "insensitive" } },
       ];
     }
 
-    const total = await User.countDocuments(filter);
+    const total = await prisma.user.count({ where: filter });
     const totalPages = Math.ceil(total / limitNum);
     const skip = (pageNum - 1) * limitNum;
 
-    const users = await User.find(filter)
-      .select("-password")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .lean();
+    const rawUsers = await prisma.user.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNum,
+    });
+
+    const users = rawUsers.map((user) => {
+      const u = { ...user, _id: user.id };
+      delete (u as any).password;
+      return u;
+    });
 
     res.status(200).json({
       success: true,
@@ -884,23 +978,28 @@ export const listAllUsers = async (
 
 // GET /api/admin/users/:userId — get single user detail
 export const getUserDetail = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
     const { userId } = req.params;
 
-    const user = await User.findById(userId).select("-password").lean();
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
 
     if (!user) {
       res.status(404).json({ success: false, message: "User not found." });
       return;
     }
 
+    const u = { ...user, _id: user.id };
+    delete (u as any).password;
+
     res.status(200).json({
       success: true,
-      data: { user },
+      data: { user: u },
     });
   } catch (error) {
     next(error);
@@ -909,14 +1008,16 @@ export const getUserDetail = async (
 
 // PATCH /api/admin/users/:userId/toggle-status — block / activate user
 export const toggleUserStatus = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
     const { userId } = req.params;
 
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
 
     if (!user) {
       res.status(404).json({ success: false, message: "User not found." });
@@ -929,15 +1030,19 @@ export const toggleUserStatus = async (
     }
 
     const oldStatus = user.status;
-    user.status = oldStatus === "Active" ? "Blocked" : "Active";
-    await user.save();
+    const newStatus = oldStatus === "Active" ? "Blocked" : "Active";
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { status: newStatus }
+    });
 
     res.status(200).json({
       success: true,
-      message: `User ${user.status === "Blocked" ? "blocked" : "activated"} successfully.`,
+      message: `User ${updated.status === "Blocked" ? "blocked" : "activated"} successfully.`,
       data: {
-        userId: user._id,
-        status: user.status,
+        userId: updated.id,
+        status: updated.status,
         oldStatus,
       },
     });
@@ -948,7 +1053,7 @@ export const toggleUserStatus = async (
 
 // PATCH /api/admin/users/:userId/wallet — update wallet balance (award coins)
 export const updateUserWallet = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
@@ -961,7 +1066,9 @@ export const updateUserWallet = async (
       return;
     }
 
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
 
     if (!user) {
       res.status(404).json({ success: false, message: "User not found." });
@@ -969,15 +1076,19 @@ export const updateUserWallet = async (
     }
 
     const oldBalance = user.walletBalance;
-    user.walletBalance = Math.max(0, user.walletBalance + amount);
-    await user.save();
+    const newBalance = Math.max(0, user.walletBalance + amount);
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { walletBalance: newBalance }
+    });
 
     res.status(200).json({
       success: true,
       message: `Wallet ${amount >= 0 ? "credited" : "debited"} successfully.`,
       data: {
-        userId: user._id,
-        walletBalance: user.walletBalance,
+        userId: updated.id,
+        walletBalance: updated.walletBalance,
         oldBalance,
         amount,
         reason: reason || (amount >= 0 ? "Admin credit" : "Admin debit"),
@@ -990,14 +1101,16 @@ export const updateUserWallet = async (
 
 // ── Delete User ──
 export const deleteUser = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
     const { userId } = req.params;
 
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
 
     if (!user) {
       res.status(404).json({ success: false, message: "User not found." });
@@ -1009,7 +1122,9 @@ export const deleteUser = async (
       return;
     }
 
-    await User.findByIdAndDelete(userId);
+    await prisma.user.delete({
+      where: { id: userId }
+    });
 
     res.status(200).json({
       success: true,
@@ -1028,16 +1143,24 @@ export const deleteUser = async (
  * @access  Admin only
  */
 export const listTestimonials = async (
-  _req: Request,
+  _req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const testimonials = await Testimonial.find().sort({ order: 1, createdAt: -1 }).lean();
+    const testimonials = await prisma.testimonial.findMany({
+      orderBy: [
+        { order: "asc" },
+        { createdAt: "desc" }
+      ]
+    });
+
+    const mapped = testimonials.map(t => ({ ...t, _id: t.id }));
+
     res.status(200).json({
       status: "success",
-      results: testimonials.length,
-      data: { testimonials },
+      results: mapped.length,
+      data: { testimonials: mapped },
     });
   } catch (error) {
     next(error);
@@ -1050,23 +1173,28 @@ export const listTestimonials = async (
  * @access  Admin only
  */
 export const createTestimonial = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
     const { name, role, text, image, order, isActive } = req.body;
-    const testimonial = await Testimonial.create({
-      name,
-      role,
-      text,
-      image: image || "",
-      order: order ?? 0,
-      isActive: isActive ?? true,
+    const testimonial = await prisma.testimonial.create({
+      data: {
+        name,
+        role,
+        text,
+        image: image || "",
+        order: order !== undefined ? Number(order) : 0,
+        isActive: isActive ?? true,
+      }
     });
+
+    const mapped = { ...testimonial, _id: testimonial.id };
+
     res.status(201).json({
       status: "success",
-      data: { testimonial },
+      data: { testimonial: mapped },
     });
   } catch (error) {
     next(error);
@@ -1079,7 +1207,7 @@ export const createTestimonial = async (
  * @access  Admin only
  */
 export const updateTestimonial = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
@@ -1087,24 +1215,31 @@ export const updateTestimonial = async (
     const { id } = req.params;
     const { name, role, text, image, order, isActive } = req.body;
 
-    const testimonial = await Testimonial.findById(id);
+    const testimonial = await prisma.testimonial.findUnique({
+      where: { id }
+    });
     if (!testimonial) {
       res.status(404).json({ status: "fail", message: "Testimonial not found." });
       return;
     }
 
-    if (name !== undefined) testimonial.name = name;
-    if (role !== undefined) testimonial.role = role;
-    if (text !== undefined) testimonial.text = text;
-    if (image !== undefined) testimonial.image = image;
-    if (order !== undefined) testimonial.order = order;
-    if (isActive !== undefined) testimonial.isActive = isActive;
+    const updated = await prisma.testimonial.update({
+      where: { id },
+      data: {
+        name: name !== undefined ? name : undefined,
+        role: role !== undefined ? role : undefined,
+        text: text !== undefined ? text : undefined,
+        image: image !== undefined ? image : undefined,
+        order: order !== undefined ? Number(order) : undefined,
+        isActive: isActive !== undefined ? isActive : undefined,
+      }
+    });
 
-    await testimonial.save();
+    const mapped = { ...updated, _id: updated.id };
 
     res.status(200).json({
       status: "success",
-      data: { testimonial },
+      data: { testimonial: mapped },
     });
   } catch (error) {
     next(error);
@@ -1117,17 +1252,25 @@ export const updateTestimonial = async (
  * @access  Admin only
  */
 export const deleteTestimonial = async (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
     const { id } = req.params;
-    const testimonial = await Testimonial.findByIdAndDelete(id);
+
+    const testimonial = await prisma.testimonial.findUnique({
+      where: { id }
+    });
     if (!testimonial) {
       res.status(404).json({ status: "fail", message: "Testimonial not found." });
       return;
     }
+
+    await prisma.testimonial.delete({
+      where: { id }
+    });
+
     res.status(200).json({
       status: "success",
       message: "Testimonial deleted successfully.",
@@ -1143,21 +1286,35 @@ export const deleteTestimonial = async (
  * @access  Public
  */
 export const getPublicTestimonials = async (
-  _req: Request,
+  _req: any,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
   try {
-    const testimonials = await Testimonial.find({ isActive: true })
-      .sort({ order: 1, createdAt: -1 })
-      .select("name role text image order")
-      .lean();
+    const testimonials = await prisma.testimonial.findMany({
+      where: { isActive: true },
+      orderBy: [
+        { order: "asc" },
+        { createdAt: "desc" }
+      ],
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        text: true,
+        image: true,
+        order: true,
+      }
+    });
+
+    const mapped = testimonials.map(t => ({ ...t, _id: t.id }));
+
     res.status(200).json({
       status: "success",
-      results: testimonials.length,
-      data: { testimonials },
+      results: mapped.length,
+      data: { testimonials: mapped },
     });
   } catch (error) {
     next(error);
   }
-};
+};

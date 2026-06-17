@@ -6,9 +6,7 @@ import { Server as SocketIOServer } from "socket.io";
 import type { Socket } from "socket.io";
 import jwt from "jsonwebtoken";
 import app from "./app.js";
-import { connectDB } from "./config/db.js";
-import { Message } from "./models/Message.js";
-import { Conversation } from "./models/Conversation.js";
+import { connectDB, prisma } from "./config/db.js";
 
 const PORT = process.env.PORT || 5000;
 
@@ -23,6 +21,7 @@ const io = new SocketIOServer(httpServer, {
     origin: [
       process.env.CLIENT_URL || "http://localhost:3001",
       "http://localhost:3000",
+      "http://192.168.31.191:3000",
     ],
     methods: ["GET", "POST"],
     credentials: true,
@@ -111,10 +110,12 @@ io.on("connection", (socket: Socket) => {
         }
 
         // Verify user is participant
-        const conversation = await Conversation.findOne({
-          _id: conversationId,
-          participants: userId,
-          isActive: true,
+        const conversation = await prisma.conversation.findFirst({
+          where: {
+            id: conversationId,
+            participants: { has: userId },
+            isActive: true,
+          }
         });
 
         if (!conversation) {
@@ -123,43 +124,68 @@ io.on("connection", (socket: Socket) => {
         }
 
         // Create message
-        const message = await (Message.create as any)({
-          conversation: conversationId,
-          sender: userId,
-          type,
-          text: text || "",
-          mediaUrl: mediaUrl || undefined,
-          mediaType: mediaType || undefined,
-          fileName: fileName || undefined,
-          fileSize: fileSize || undefined,
+        const message = await prisma.message.create({
+          data: {
+            conversationId,
+            senderId: userId,
+            type,
+            text: text || "",
+            mediaUrl: mediaUrl || null,
+            mediaType: mediaType || null,
+            fileName: fileName || null,
+            fileSize: fileSize !== undefined ? Number(fileSize) : null,
+          }
         });
 
-        await (message as any).populate("sender", "name email");
+        const sender = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, name: true, email: true },
+        });
+
+        const populatedMessage = {
+          _id: message.id,
+          conversation: message.conversationId,
+          sender: sender ? { _id: sender.id, name: sender.name, email: sender.email } : null,
+          type: message.type,
+          text: message.text,
+          mediaUrl: message.mediaUrl,
+          mediaType: message.mediaType,
+          fileName: message.fileName,
+          fileSize: message.fileSize,
+          isRead: message.isRead,
+          readAt: message.readAt,
+          createdAt: message.createdAt,
+          updatedAt: message.updatedAt,
+        };
 
         // Update conversation
         const displayText = text || (type === "image" ? "📷 Image" : type === "file" ? "📎 File" : "");
 
-        conversation.lastMessage = {
-          text: displayText,
-          sender: userId as any,
-          sentAt: new Date(),
-        };
-
-        // Increment unread count for other participant
+        const unreadObj = (conversation.unreadCount && typeof conversation.unreadCount === "object"
+          ? { ...conversation.unreadCount }
+          : {}) as any;
         const otherParticipant = conversation.participants.find(
           (p: any) => p.toString() !== userId.toString()
         );
         if (otherParticipant) {
-          const current = conversation.unreadCount.get(otherParticipant.toString()) || 0;
-          conversation.unreadCount.set(otherParticipant.toString(), current + 1);
+          const current = unreadObj[otherParticipant] || 0;
+          unreadObj[otherParticipant] = current + 1;
         }
 
-        await conversation.save();
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            lastMessageText: displayText,
+            lastMessageSenderId: userId,
+            lastMessageSentAt: new Date(),
+            unreadCount: unreadObj,
+          }
+        });
 
         // Emit to the conversation room
-        io.to(conversationId).emit("message:new", { message });
+        io.to(conversationId).emit("message:new", { message: populatedMessage });
 
-        callback({ ok: true, data: message });
+        callback({ ok: true, data: populatedMessage });
       } catch (error: any) {
         console.error("[Socket.IO] message:send error:", error.message);
         callback({ ok: false, error: "Failed to send message." });
@@ -181,15 +207,30 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("messages:read", async (conversationId: string) => {
     try {
-      await Message.updateMany(
-        { conversation: conversationId, sender: { $ne: userId }, isRead: false } as any,
-        { isRead: true, readAt: new Date() }
-      );
+      await prisma.message.updateMany({
+        where: {
+          conversationId,
+          senderId: { not: userId },
+          isRead: false,
+        },
+        data: {
+          isRead: true,
+          readAt: new Date(),
+        }
+      });
 
-      const conversation = await Conversation.findById(conversationId);
+      const conversation = await prisma.conversation.findUnique({
+        where: { id: conversationId }
+      });
       if (conversation) {
-        conversation.unreadCount.set(userId.toString(), 0);
-        await conversation.save();
+        const unreadObj = (conversation.unreadCount && typeof conversation.unreadCount === "object"
+          ? { ...conversation.unreadCount }
+          : {}) as any;
+        unreadObj[userId] = 0;
+        await prisma.conversation.update({
+          where: { id: conversationId },
+          data: { unreadCount: unreadObj }
+        });
       }
 
       socket.to(conversationId).emit("messages:read", { conversationId, readBy: userId });
@@ -228,3 +269,4 @@ const startServer = async () => {
 startServer();
 
 export { io };
+

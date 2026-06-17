@@ -1,48 +1,67 @@
 import type { Response } from "express";
-import { Wishlist } from "../models/Wishlist.js";
-import { Listing } from "../models/Listing.js";
-import { Activity } from "../models/Activity.js";
+import { prisma } from "../config/db.js";
 
 // ── Helper: Build populated wishlist with full item details ──
 async function populateWishlist(userId: string) {
-  const items = await Wishlist.find({ userId } as any).sort({ createdAt: -1 }).lean();
+  const items = await prisma.wishlist.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+  });
 
   const stayIds = items.filter((w) => w.itemType === "stay").map((w) => w.itemId);
   const activityIds = items.filter((w) => w.itemType === "activity").map((w) => w.itemId);
 
   const [stays, activities] = await Promise.all([
     stayIds.length > 0
-      ? Listing.find({ _id: { $in: stayIds } } as any)
-          .select("title location city media price avgRating")
-          .lean()
+      ? prisma.listing.findMany({
+          where: { id: { in: stayIds } },
+          select: {
+            id: true,
+            name: true,
+            city: true,
+            address: true,
+            media: true,
+            basePrice: true,
+            avgRating: true,
+          },
+        })
       : [],
     activityIds.length > 0
-      ? Activity.find({ _id: { $in: activityIds } } as any)
-          .select("title location city media price avgRating")
-          .lean()
+      ? prisma.activity.findMany({
+          where: { id: { in: activityIds } },
+          select: {
+            id: true,
+            name: true,
+            city: true,
+            address: true,
+            media: true,
+            basePrice: true,
+            avgRating: true,
+          },
+        })
       : [],
   ]);
 
-  const stayMap = new Map(stays.map((s: any) => [s._id.toString(), s]));
-  const activityMap = new Map(activities.map((a: any) => [a._id.toString(), a]));
+  const stayMap = new Map(stays.map((s: any) => [s.id, s]));
+  const activityMap = new Map(activities.map((a: any) => [a.id, a]));
 
   return items
     .map((w) => {
-      const idStr = w.itemId.toString();
+      const idStr = w.itemId;
       const item = w.itemType === "stay" ? stayMap.get(idStr) : activityMap.get(idStr);
       if (!item) return null;
       return {
-        wishlistId: w._id,
+        wishlistId: w.id,
         itemType: w.itemType,
         item: {
-          _id: (item as any)._id,
-          title: (item as any).title,
-          location: (item as any).location || (item as any).city,
+          _id: (item as any).id,
+          title: (item as any).name,
+          location: (item as any).address || (item as any).city,
           city: (item as any).city,
-          price: (item as any).price,
+          price: (item as any).basePrice,
           avgRating: (item as any).avgRating,
           image:
-            (item as any).media && (item as any).media.length > 0
+            (item as any).media && Array.isArray((item as any).media) && (item as any).media.length > 0
               ? (item as any).media[0].url
               : "https://images.unsplash.com/photo-1580587771525-78b9dba3b914?auto=format&fit=crop&q=80&w=600",
         },
@@ -88,11 +107,21 @@ export const toggleWishlist = async (req: any, res: Response): Promise<void> => 
     }
 
     // Check if already wishlisted
-    const existing = await Wishlist.findOne({ userId, itemId, itemType } as any);
+    const existing = await prisma.wishlist.findUnique({
+      where: {
+        userId_itemId_itemType: {
+          userId,
+          itemId,
+          itemType,
+        },
+      },
+    });
 
     if (existing) {
       // Remove from wishlist
-      await Wishlist.deleteOne({ _id: existing._id } as any);
+      await prisma.wishlist.delete({
+        where: { id: existing.id },
+      });
       res.status(200).json({
         status: "success",
         data: { isWishlisted: false, action: "removed" },
@@ -101,14 +130,16 @@ export const toggleWishlist = async (req: any, res: Response): Promise<void> => 
     }
 
     // Add to wishlist
-    await Wishlist.create({ userId, itemId, itemType } as any);
+    await prisma.wishlist.create({
+      data: { userId, itemId, itemType },
+    });
     res.status(200).json({
       status: "success",
       data: { isWishlisted: true, action: "added" },
     });
   } catch (error: any) {
-    // Handle duplicate key error (race condition)
-    if (error.code === 11000) {
+    // Handle duplicate key error (P2002 in Prisma)
+    if (error.code === "P2002") {
       res.status(200).json({
         status: "success",
         data: { isWishlisted: true, action: "already_exists" },
@@ -131,13 +162,15 @@ export const checkWishlist = async (req: any, res: Response): Promise<void> => {
       return;
     }
 
-    const wishlistItems = await Wishlist.find({
-      userId,
-      $or: items.map((i: any) => ({ itemId: i.itemId, itemType: i.itemType })),
-    } as any).lean();
+    const wishlistItems = await prisma.wishlist.findMany({
+      where: {
+        userId,
+        OR: items.map((i: any) => ({ itemId: i.itemId, itemType: i.itemType })),
+      },
+    });
 
     const wishlistedSet = new Set(
-      wishlistItems.map((w) => `${w.itemType}:${w.itemId.toString()}`)
+      wishlistItems.map((w) => `${w.itemType}:${w.itemId}`)
     );
 
     const result = items.map((i: any) => ({
@@ -167,7 +200,10 @@ export const removeWishlistItem = async (req: any, res: Response): Promise<void>
       return;
     }
 
-    await Wishlist.deleteOne({ userId, itemId, itemType } as any);
+    // Delete matching wishlist record
+    await prisma.wishlist.deleteMany({
+      where: { userId, itemId, itemType },
+    });
 
     res.status(200).json({
       status: "success",

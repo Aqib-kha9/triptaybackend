@@ -1,6 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { Listing } from "../models/Listing.js";
-import { Activity } from "../models/Activity.js";
+import { prisma } from "../config/db.js";
 import cloudinary from "../config/cloudinary.js";
 import { validateMagicBytes } from "../utils/validateMagicBytes.js";
 
@@ -9,6 +8,63 @@ import { validateMagicBytes } from "../utils/validateMagicBytes.js";
 const computeEffectiveWeekendPrice = (base: number, weekend?: number): number => {
   if (weekend && weekend > 0) return weekend;
   return Math.round(base * 1.3);
+};
+
+// ─── Helper: auto-generate slug from name ───
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// ─── Helper: ensure unique slug ───
+async function ensureUniqueListingSlug(baseSlug: string, excludeId?: string): Promise<string> {
+  let slug = baseSlug;
+  let counter = 1;
+  while (true) {
+    const existing = await prisma.listing.findFirst({
+      where: {
+        slug,
+        id: excludeId ? { not: excludeId } : undefined,
+      },
+    });
+    if (!existing) break;
+    slug = `${baseSlug}-${counter}`;
+    counter++;
+  }
+  return slug;
+}
+
+// Helper to map flat database lat/lng to frontend-compatible coordinates object
+function mapListingResponse(l: any) {
+  if (!l) return null;
+  const mapped = {
+    ...l,
+    _id: l.id,
+    host: l.hostId,
+    coordinates: {
+      lat: l.lat,
+      lng: l.lng,
+    },
+  };
+  delete mapped.lat;
+  delete mapped.lng;
+  return mapped;
+}
+
+const populateHostForListing = async (listing: any) => {
+  if (!listing) return null;
+  const host = await prisma.user.findUnique({
+    where: { id: listing.hostId },
+    select: { id: true, name: true, avatar: true, email: true, phone: true }
+  });
+  const mapped = mapListingResponse(listing);
+  if (mapped) {
+    mapped.host = host ? { _id: host.id, id: host.id, name: host.name, avatar: host.avatar, email: host.email, phone: host.phone } : null;
+  }
+  return mapped;
 };
 
 // ──────────────────────── CREATE ────────────────────────
@@ -68,76 +124,78 @@ export const createListing = async (req: any, res: Response, next: NextFunction)
       return;
     }
 
+    const baseSlug = generateSlug(name);
+    const slug = await ensureUniqueListingSlug(baseSlug);
+
     // ── Build the listing document ──
-    const listing = await Listing.create({
-      host: hostId,
-      name: name.trim(),
-      summary: summary.trim(),
-      description: description.trim(),
-      propertyType,
-      floorNumber: floorNumber ?? undefined,
-      totalFloors: totalFloors ?? undefined,
-      propertySizeSqFt: propertySizeSqFt ?? undefined,
-      yearBuilt: yearBuilt ?? undefined,
-      isEntirePlace: isEntirePlace ?? true,
-      address: address.trim(),
-      city: city.trim(),
-      state: state.trim(),
-      country: country?.trim() || "India",
-      zipCode: zipCode.trim(),
-      coordinates: { lat: coordinates.lat, lng: coordinates.lng },
-      landmark: landmark?.trim() || undefined,
-      maxGuests,
-      bedrooms: bedrooms ?? 1,
-      beds: beds ?? 1,
-      bathrooms: bathrooms ?? 1,
-      extraMattresses: extraMattresses ?? 0,
-      basePrice,
-      weekendPrice: weekendPrice ?? undefined,
-      seasonalPrices: seasonalPrices ?? [],
-      cleaningFee: cleaningFee ?? 0,
-      securityDeposit: securityDeposit ?? 0,
-      extraGuestPrice: extraGuestPrice ?? 0,
-      taxes: taxes ?? 0,
-      minStay: minStay ?? 1,
-      maxStay: maxStay ?? 0,
-      checkInTime: checkInTime ?? "12:00 PM",
-      checkOutTime: checkOutTime ?? "11:00 AM",
-      flexibleCheckIn: flexibleCheckIn ?? false,
-      flexibleCheckOut: flexibleCheckOut ?? false,
-      amenities: amenities ?? [],
-      meals: meals ?? [],
-      hasKitchen: hasKitchen ?? false,
-      kitchenDetails: kitchenDetails?.trim() || undefined,
-      houseRules: houseRules ?? [],
-      cancellationPolicy: cancellationPolicy ?? "Moderate",
-      cancellationDetails: cancellationDetails?.trim() || undefined,
-      isPetFriendly: isPetFriendly ?? false,
-      petRules: petRules?.trim() || undefined,
-      isSmokingAllowed: isSmokingAllowed ?? false,
-      isPartyAllowed: isPartyAllowed ?? false,
-      quietHoursStart: quietHoursStart ?? undefined,
-      quietHoursEnd: quietHoursEnd ?? undefined,
-      nearbyPlaces: nearbyPlaces ?? [],
-      languagesSpoken: languagesSpoken ?? [],
-      instantBook: instantBook ?? true,
-      advanceNoticeHours: advanceNoticeHours ?? 0,
-      maxGuestsPerBooking: maxGuestsPerBooking ?? maxGuests,
-      status: status ?? "draft",
+    const listing = await prisma.listing.create({
+      data: {
+        hostId,
+        name: name.trim(),
+        slug,
+        summary: summary.trim(),
+        description: description.trim(),
+        propertyType,
+        floorNumber: floorNumber !== undefined ? Number(floorNumber) : null,
+        totalFloors: totalFloors !== undefined ? Number(totalFloors) : null,
+        propertySizeSqFt: propertySizeSqFt !== undefined ? Number(propertySizeSqFt) : null,
+        yearBuilt: yearBuilt !== undefined ? Number(yearBuilt) : null,
+        isEntirePlace: isEntirePlace ?? true,
+        address: address.trim(),
+        city: city.trim(),
+        state: state.trim(),
+        country: country?.trim() || "India",
+        zipCode: zipCode.trim(),
+        lat: Number(coordinates.lat),
+        lng: Number(coordinates.lng),
+        landmark: landmark?.trim() || null,
+        maxGuests: Number(maxGuests),
+        bedrooms: bedrooms !== undefined ? Number(bedrooms) : 1,
+        beds: beds !== undefined ? Number(beds) : 1,
+        bathrooms: bathrooms !== undefined ? Number(bathrooms) : 1,
+        extraMattresses: extraMattresses !== undefined ? Number(extraMattresses) : 0,
+        basePrice: Number(basePrice),
+        weekendPrice: weekendPrice !== undefined ? Number(weekendPrice) : null,
+        seasonalPrices: seasonalPrices || null,
+        cleaningFee: cleaningFee !== undefined ? Number(cleaningFee) : 0,
+        securityDeposit: securityDeposit !== undefined ? Number(securityDeposit) : 0,
+        extraGuestPrice: extraGuestPrice !== undefined ? Number(extraGuestPrice) : 0,
+        taxes: taxes !== undefined ? Number(taxes) : 0,
+        minStay: minStay !== undefined ? Number(minStay) : 1,
+        maxStay: maxStay !== undefined ? Number(maxStay) : 0,
+        checkInTime: checkInTime || "12:00 PM",
+        checkOutTime: checkOutTime || "11:00 AM",
+        flexibleCheckIn: flexibleCheckIn ?? false,
+        flexibleCheckOut: flexibleCheckOut ?? false,
+        amenities: amenities || [],
+        meals: meals || null,
+        hasKitchen: hasKitchen ?? false,
+        kitchenDetails: kitchenDetails?.trim() || null,
+        houseRules: houseRules || null,
+        cancellationPolicy: cancellationPolicy || "Moderate",
+        cancellationDetails: cancellationDetails?.trim() || null,
+        isPetFriendly: isPetFriendly ?? false,
+        petRules: petRules?.trim() || null,
+        isSmokingAllowed: isSmokingAllowed ?? false,
+        isPartyAllowed: isPartyAllowed ?? false,
+        quietHoursStart: quietHoursStart || null,
+        quietHoursEnd: quietHoursEnd || null,
+        nearbyPlaces: nearbyPlaces || null,
+        languagesSpoken: languagesSpoken || [],
+        instantBook: instantBook ?? true,
+        advanceNoticeHours: advanceNoticeHours !== undefined ? Number(advanceNoticeHours) : 0,
+        maxGuestsPerBooking: maxGuestsPerBooking !== undefined ? Number(maxGuestsPerBooking) : Number(maxGuests),
+        status: status || "draft",
+        media: [],
+      }
     });
 
     res.status(201).json({
       status: "success",
       message: "Listing created successfully.",
-      data: { listing },
+      data: { listing: mapListingResponse(listing) },
     });
   } catch (error: any) {
-    // Mongoose validation error
-    if (error.name === "ValidationError") {
-      const messages = Object.values(error.errors).map((e: any) => e.message);
-      res.status(400).json({ status: "fail", message: messages.join("; ") });
-      return;
-    }
     next(error);
   }
 };
@@ -151,7 +209,7 @@ export const getMyListings = async (req: any, res: Response, next: NextFunction)
   try {
     const hostId = req.user?.id || req.user?._id;
     const { status, page = "1", limit = "20" } = req.query;
-    const filter: any = { host: hostId };
+    const filter: any = { hostId };
     if (status && ["draft", "published", "unlisted", "rejected"].includes(status as string)) {
       filter.status = status;
     }
@@ -160,22 +218,24 @@ export const getMyListings = async (req: any, res: Response, next: NextFunction)
     const skip = (pageNum - 1) * limitNum;
 
     const [listings, total] = await Promise.all([
-      Listing.find(filter)
-        .sort({ updatedAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .select("-__v")
-        .lean(),
-      Listing.countDocuments(filter),
+      prisma.listing.findMany({
+        where: filter,
+        orderBy: { updatedAt: "desc" },
+        skip,
+        take: limitNum,
+      }),
+      prisma.listing.count({ where: filter }),
     ]);
+
+    const mappedListings = listings.map(mapListingResponse);
 
     res.status(200).json({
       status: "success",
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
-      results: listings.length,
-      data: { listings },
+      results: mappedListings.length,
+      data: { listings: mappedListings },
     });
   } catch (error) {
     next(error);
@@ -189,14 +249,16 @@ export const getMyListings = async (req: any, res: Response, next: NextFunction)
 // @access  Private
 export const getListing = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const listing = await Listing.findById(req.params.id).select("-__v");
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id }
+    });
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
     }
     res.status(200).json({
       status: "success",
-      data: { listing },
+      data: { listing: mapListingResponse(listing) },
     });
   } catch (error) {
     next(error);
@@ -211,13 +273,15 @@ export const getListing = async (req: any, res: Response, next: NextFunction): P
 export const updateListing = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
     const hostId = req.user?.id || req.user?._id;
-    const listing = await Listing.findById(req.params.id);
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id }
+    });
 
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
     }
-    if (listing.host.toString() !== hostId) {
+    if (listing.hostId !== hostId) {
       res.status(403).json({ status: "fail", message: "You can only edit your own listings." });
       return;
     }
@@ -226,7 +290,7 @@ export const updateListing = async (req: any, res: Response, next: NextFunction)
     const updatableFields = [
       "name", "summary", "description", "propertyType", "floorNumber", "totalFloors",
       "propertySizeSqFt", "yearBuilt", "isEntirePlace",
-      "address", "city", "state", "country", "zipCode", "coordinates", "landmark",
+      "address", "city", "state", "country", "zipCode", "landmark",
       "maxGuests", "bedrooms", "beds", "bathrooms", "extraMattresses",
       "basePrice", "weekendPrice", "seasonalPrices",
       "cleaningFee", "securityDeposit", "extraGuestPrice", "taxes",
@@ -241,25 +305,36 @@ export const updateListing = async (req: any, res: Response, next: NextFunction)
       "status", "videoTourUrl",
     ];
 
+    const updateData: any = {};
     for (const field of updatableFields) {
       if (req.body[field] !== undefined) {
-        (listing as any)[field] = req.body[field];
+        if (field === "coordinates") {
+          updateData.lat = Number(req.body.coordinates.lat);
+          updateData.lng = Number(req.body.coordinates.lng);
+        } else if (["floorNumber", "totalFloors", "propertySizeSqFt", "yearBuilt", "maxGuests", "bedrooms", "beds", "bathrooms", "extraMattresses", "basePrice", "weekendPrice", "cleaningFee", "securityDeposit", "extraGuestPrice", "taxes", "minStay", "maxStay", "advanceNoticeHours", "maxGuestsPerBooking"].includes(field)) {
+          updateData[field] = req.body[field] !== null ? Number(req.body[field]) : null;
+        } else {
+          updateData[field] = req.body[field];
+        }
       }
     }
 
-    await listing.save();
+    if (req.body.name && req.body.name.trim() !== listing.name) {
+      const baseSlug = generateSlug(req.body.name);
+      updateData.slug = await ensureUniqueListingSlug(baseSlug, listing.id);
+    }
+
+    const updated = await prisma.listing.update({
+      where: { id: req.params.id },
+      data: updateData,
+    });
 
     res.status(200).json({
       status: "success",
       message: "Listing updated successfully.",
-      data: { listing },
+      data: { listing: mapListingResponse(updated) },
     });
   } catch (error: any) {
-    if (error.name === "ValidationError") {
-      const messages = Object.values(error.errors).map((e: any) => e.message);
-      res.status(400).json({ status: "fail", message: messages.join("; ") });
-      return;
-    }
     next(error);
   }
 };
@@ -272,31 +347,35 @@ export const updateListing = async (req: any, res: Response, next: NextFunction)
 export const deleteListing = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
     const hostId = req.user?.id || req.user?._id;
-    const listing = await Listing.findById(req.params.id);
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id }
+    });
 
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
     }
-    if (listing.host.toString() !== hostId) {
+    if (listing.hostId !== hostId) {
       res.status(403).json({ status: "fail", message: "You can only delete your own listings." });
       return;
     }
 
     // Delete associated Cloudinary images
-    if (listing.media && listing.media.length > 0) {
-      const publicIds = listing.media.map((m) => m.publicId);
+    const mediaArray = listing.media && Array.isArray(listing.media) ? listing.media : [];
+    if (mediaArray.length > 0) {
+      const publicIds = mediaArray.map((m: any) => m.publicId).filter(Boolean);
       if (publicIds.length > 0) {
         try {
           await cloudinary.api.delete_resources(publicIds, { resource_type: "image" });
         } catch (cloudErr) {
           console.warn("Cloudinary cleanup warning:", cloudErr);
-          // Non-fatal — listing deletion proceeds
         }
       }
     }
 
-    await listing.deleteOne();
+    await prisma.listing.delete({
+      where: { id: req.params.id }
+    });
 
     res.status(200).json({
       status: "success",
@@ -315,13 +394,15 @@ export const deleteListing = async (req: any, res: Response, next: NextFunction)
 export const uploadListingMedia = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
     const hostId = req.user?.id || req.user?._id;
-    const listing = await Listing.findById(req.params.id);
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id }
+    });
 
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
     }
-    if (listing.host.toString() !== hostId) {
+    if (listing.hostId !== hostId) {
       res.status(403).json({ status: "fail", message: "You can only upload to your own listings." });
       return;
     }
@@ -334,12 +415,13 @@ export const uploadListingMedia = async (req: any, res: Response, next: NextFunc
     const files = Array.isArray(req.files) ? req.files : [req.files];
     const uploadedMedia: any[] = [];
     const maxPhotos = 15;
+    const existingMedia = Array.isArray(listing.media) ? listing.media : [];
 
     // Check if we'd exceed max photos
-    if (listing.media.length + files.length > maxPhotos) {
+    if (existingMedia.length + files.length > maxPhotos) {
       res.status(400).json({
         status: "fail",
-        message: `Cannot upload more than ${maxPhotos} photos total. Currently have ${listing.media.length}.`,
+        message: `Cannot upload more than ${maxPhotos} photos total. Currently have ${existingMedia.length}.`,
       });
       return;
     }
@@ -360,11 +442,11 @@ export const uploadListingMedia = async (req: any, res: Response, next: NextFunc
       }
 
       const b64 = `data:${file.mimetype};base64,${file.buffer.toString("base64")}`;
-      const alreadyHasCover = listing.media.some((m: any) => m.isCover) || uploadedMedia.some((m: any) => m.isCover);
+      const alreadyHasCover = existingMedia.some((m: any) => m.isCover) || uploadedMedia.some((m: any) => m.isCover);
       const isCover = !alreadyHasCover && !req.body.isCover; // first photo auto-cover
 
       const uploaded = await cloudinary.uploader.upload(b64, {
-        folder: `triptay/listings/${listing._id}`,
+        folder: `triptay/listings/${listing.id}`,
         resource_type: "image",
         quality: "auto:good",
         fetch_format: "auto",
@@ -376,30 +458,33 @@ export const uploadListingMedia = async (req: any, res: Response, next: NextFunc
         type: "photo" as const,
         caption: req.body.caption || undefined,
         isCover: req.body.isCover === "true" || isCover,
-        order: listing.media.length + uploadedMedia.length,
+        order: existingMedia.length + uploadedMedia.length,
       };
 
       uploadedMedia.push(mediaItem);
     }
 
-    listing.media.push(...uploadedMedia);
+    const newMedia = [...existingMedia, ...uploadedMedia];
 
     // If any image is explicitly marked as cover, unset others
     if (uploadedMedia.some((m) => m.isCover)) {
-      listing.media.forEach((m, i) => {
+      newMedia.forEach((m: any, i) => {
         const wasJustUploaded = uploadedMedia.some((um) => um.publicId === m.publicId);
         if (!wasJustUploaded && m.isCover) {
-          if (listing.media[i]) listing.media[i].isCover = false;
+          newMedia[i].isCover = false;
         }
       });
     }
 
-    await listing.save();
+    await prisma.listing.update({
+      where: { id: req.params.id },
+      data: { media: newMedia }
+    });
 
     res.status(200).json({
       status: "success",
       message: `${uploadedMedia.length} photo(s) uploaded.`,
-      data: { media: uploadedMedia, totalPhotos: listing.media.length },
+      data: { media: uploadedMedia, totalPhotos: newMedia.length },
     });
   } catch (error) {
     next(error);
@@ -414,19 +499,22 @@ export const uploadListingMedia = async (req: any, res: Response, next: NextFunc
 export const deleteListingMedia = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
     const hostId = req.user?.id || req.user?._id;
-    const listing = await Listing.findById(req.params.id);
+    const listing = await prisma.listing.findUnique({
+      where: { id: req.params.id }
+    });
 
     if (!listing) {
       res.status(404).json({ status: "fail", message: "Listing not found." });
       return;
     }
-    if (listing.host.toString() !== hostId) {
+    if (listing.hostId !== hostId) {
       res.status(403).json({ status: "fail", message: "You can only modify your own listings." });
       return;
     }
 
-    const mediaIndex = listing.media.findIndex(
-      (m: any) => m._id.toString() === req.params.mediaId
+    const existingMedia = Array.isArray(listing.media) ? [...listing.media] : [];
+    const mediaIndex = existingMedia.findIndex(
+      (m: any) => m._id?.toString() === req.params.mediaId || m.publicId === req.params.mediaId
     );
 
     if (mediaIndex === -1) {
@@ -434,11 +522,7 @@ export const deleteListingMedia = async (req: any, res: Response, next: NextFunc
       return;
     }
 
-    const mediaItem = listing.media[mediaIndex];
-    if (!mediaItem) {
-      res.status(404).json({ status: "fail", message: "Media item not found." });
-      return;
-    }
+    const mediaItem: any = existingMedia[mediaIndex];
 
     // Delete from Cloudinary
     try {
@@ -448,19 +532,22 @@ export const deleteListingMedia = async (req: any, res: Response, next: NextFunc
     }
 
     // Remove from array
-    listing.media.splice(mediaIndex, 1);
+    existingMedia.splice(mediaIndex, 1);
 
     // If we deleted the cover, set first remaining as cover
-    if (mediaItem.isCover && listing.media.length > 0 && listing.media[0]) {
-      listing.media[0].isCover = true;
+    if (mediaItem.isCover && existingMedia.length > 0 && existingMedia[0]) {
+      (existingMedia[0] as any).isCover = true;
     }
 
-    await listing.save();
+    await prisma.listing.update({
+      where: { id: req.params.id },
+      data: { media: existingMedia }
+    });
 
     res.status(200).json({
       status: "success",
       message: "Media item removed.",
-      data: { totalPhotos: listing.media.length },
+      data: { totalPhotos: existingMedia.length },
     });
   } catch (error) {
     next(error);
@@ -485,37 +572,43 @@ export const browseListings = async (req: Request, res: Response, next: NextFunc
 
     const filter: any = { status: "published", isActive: true };
 
-    if (city) filter.city = new RegExp(city as string, "i");
-    if (state) filter.state = new RegExp(state as string, "i");
+    if (city) filter.city = { contains: city as string, mode: "insensitive" };
+    if (state) filter.state = { contains: state as string, mode: "insensitive" };
     if (propertyType) filter.propertyType = propertyType;
-    if (minPrice) filter.basePrice = { $gte: parseInt(minPrice as string, 10) };
+    if (minPrice) filter.basePrice = { gte: parseInt(minPrice as string, 10) };
     if (maxPrice) {
-      filter.basePrice = { ...(filter.basePrice || {}), $lte: parseInt(maxPrice as string, 10) };
+      filter.basePrice = { ...(filter.basePrice || {}), lte: parseInt(maxPrice as string, 10) };
     }
-    if (guests) filter.maxGuests = { $gte: parseInt(guests as string, 10) };
-    if (bedrooms) filter.bedrooms = { $gte: parseInt(bedrooms as string, 10) };
-    if (bathrooms) filter.bathrooms = { $gte: parseInt(bathrooms as string, 10) };
+    if (guests) filter.maxGuests = { gte: parseInt(guests as string, 10) };
+    if (bedrooms) filter.bedrooms = { gte: parseInt(bedrooms as string, 10) };
+    if (bathrooms) filter.bathrooms = { gte: parseInt(bathrooms as string, 10) };
     if (amenityFilter) {
       const amenitiesList = (amenityFilter as string).split(",").map((a) => a.trim());
-      filter.amenities = { $all: amenitiesList };
+      filter.amenities = { hasEvery: amenitiesList };
     }
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const limitNum = Math.min(50, Math.max(1, parseInt(limit as string, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
+    const sortField = (sort as string).startsWith("-") ? (sort as string).substring(1) : (sort as string);
+    const sortOrder = (sort as string).startsWith("-") ? "desc" : "asc";
+    const orderBy = { [sortField]: sortOrder };
+
     const [listings, total] = await Promise.all([
-      Listing.find(filter)
-        .sort(sort as string)
-        .skip(skip)
-        .limit(limitNum)
-        .select("name slug summary propertyType city state country basePrice weekendPrice avgRating totalReviews media coordinates maxGuests bedrooms bathrooms amenities isPetFriendly instantBook")
-        .lean(),
-      Listing.countDocuments(filter),
+      prisma.listing.findMany({
+        where: filter,
+        orderBy,
+        skip,
+        take: limitNum,
+      }),
+      prisma.listing.count({ where: filter }),
     ]);
 
-    // Attach computed effectiveWeekendPrice (virtual won't work on lean)
-    const enriched = listings.map((l: any) => ({
+    const mappedListings = listings.map(mapListingResponse);
+
+    // Attach computed effectiveWeekendPrice
+    const enriched = mappedListings.map((l: any) => ({
       ...l,
       effectiveWeekendPrice: l.weekendPrice && l.weekendPrice > 0 ? l.weekendPrice : Math.round(l.basePrice * 1.3),
     }));
@@ -538,25 +631,23 @@ export const browseListings = async (req: Request, res: Response, next: NextFunc
 // @desc    Get a single published listing by slug (or _id) for public detail page
 // @route   GET /api/public/listing/:slug
 // @access  Public
-export const getPublicListing = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getPublicListing = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
     const { slug } = req.params;
 
     // 1) Try by slug first
-    let listing = await Listing.findOne({ slug, status: "published", isActive: true })
-      .populate("host", "name avatar email phone")
-      .select("-__v")
-      .lean();
+    let listing = await prisma.listing.findFirst({
+      where: { slug, status: "published", isActive: true }
+    });
 
-    // 2) Fallback: try by _id (ObjectId)
+    // 2) Fallback: try by id
     if (!listing) {
       try {
-        listing = await Listing.findOne({ _id: slug, status: "published", isActive: true })
-          .populate("host", "name avatar email phone")
-          .select("-__v")
-          .lean();
+        listing = await prisma.listing.findFirst({
+          where: { id: slug, status: "published", isActive: true }
+        });
       } catch {
-        // invalid ObjectId string → ignore
+        // invalid ID string → ignore
       }
     }
 
@@ -565,14 +656,13 @@ export const getPublicListing = async (req: Request, res: Response, next: NextFu
       return;
     }
 
-    // Attach computed effectiveWeekendPrice
-    const enriched = {
-      ...listing,
-      effectiveWeekendPrice:
-        (listing as any).weekendPrice && (listing as any).weekendPrice > 0
-          ? (listing as any).weekendPrice
-          : Math.round((listing as any).basePrice * 1.3),
-    };
+    const enriched = await populateHostForListing(listing);
+    if (enriched) {
+      (enriched as any).effectiveWeekendPrice =
+        (enriched as any).weekendPrice && (enriched as any).weekendPrice > 0
+          ? (enriched as any).weekendPrice
+          : Math.round((enriched as any).basePrice * 1.3);
+    }
 
     res.status(200).json({
       status: "success",
@@ -598,12 +688,27 @@ export const locationSuggestions = async (req: Request, res: Response, next: Nex
       return;
     }
 
-    const regex = new RegExp(query, "i");
-
-    const [listingCities, activityCities] = await Promise.all([
-      Listing.distinct("city", { status: "published", isActive: true, city: regex }),
-      Activity.distinct("city", { status: "published", isActive: true, city: regex }),
+    const [listings, activities] = await Promise.all([
+      prisma.listing.findMany({
+        where: {
+          status: "published",
+          isActive: true,
+          city: { contains: query, mode: "insensitive" }
+        },
+        select: { city: true }
+      }),
+      prisma.activity.findMany({
+        where: {
+          status: "published",
+          isActive: true,
+          city: { contains: query, mode: "insensitive" }
+        },
+        select: { city: true }
+      }),
     ]);
+
+    const listingCities = listings.map(l => l.city);
+    const activityCities = activities.map(a => a.city);
 
     // Merge, deduplicate, sort, limit
     const merged = [...new Set([...listingCities, ...activityCities])]
@@ -621,10 +726,6 @@ export const locationSuggestions = async (req: Request, res: Response, next: Nex
 };
 
 // ──────────────────────── NEARBY BROWSE ────────────────────────
-
-// @desc    Browse listings + activities near a given lat/lng
-// @route   GET /api/nearby/browse
-// @access  Public
 
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371; // Earth radius in km
@@ -668,29 +769,25 @@ export const browseNearby = async (req: Request, res: Response, next: NextFuncti
     const listingFilter = {
       status: "published",
       isActive: true,
-      "coordinates.lat": { $gte: box.minLat, $lte: box.maxLat },
-      "coordinates.lng": { $gte: box.minLng, $lte: box.maxLng },
+      lat: { gte: box.minLat, lte: box.maxLat },
+      lng: { gte: box.minLng, lte: box.maxLng },
     };
 
     const activityFilter = {
       status: "published",
       isActive: true,
-      "coordinates.lat": { $gte: box.minLat, $lte: box.maxLat },
-      "coordinates.lng": { $gte: box.minLng, $lte: box.maxLng },
+      lat: { gte: box.minLat, lte: box.maxLat },
+      lng: { gte: box.minLng, lte: box.maxLng },
     };
 
     const [rawListings, rawActivities] = await Promise.all([
-      Listing.find(listingFilter as any)
-        .select("name slug summary propertyType city state country basePrice weekendPrice avgRating totalReviews media coordinates maxGuests bedrooms bathrooms amenities isPetFriendly instantBook")
-        .lean(),
-      Activity.find(activityFilter as any)
-        .select("name slug summary activityType difficulty city state country basePrice weekendPrice childPrice avgRating totalReviews media coordinates durationHours maxGroupSize minAge included instantBook")
-        .lean(),
+      prisma.listing.findMany({ where: listingFilter }),
+      prisma.activity.findMany({ where: activityFilter }),
     ]);
 
     // Compute distance & enrich
     const listingsWithDist = rawListings.map((l: any) => ({
-      _id: l._id,
+      _id: l.id,
       name: l.name,
       slug: l.slug,
       summary: l.summary,
@@ -710,11 +807,11 @@ export const browseNearby = async (req: Request, res: Response, next: NextFuncti
       instantBook: l.instantBook,
       price: l.basePrice,
       effectiveWeekendPrice: l.weekendPrice && l.weekendPrice > 0 ? l.weekendPrice : Math.round(l.basePrice * 1.3),
-      distanceKm: parseFloat(haversineKm(lat, lng, l.coordinates.lat, l.coordinates.lng).toFixed(2)),
+      distanceKm: parseFloat(haversineKm(lat, lng, l.lat, l.lng).toFixed(2)),
     }));
 
     const activitiesWithDist = rawActivities.map((a: any) => ({
-      _id: a._id,
+      _id: a.id,
       name: a.name,
       slug: a.slug,
       summary: a.summary,
@@ -734,7 +831,7 @@ export const browseNearby = async (req: Request, res: Response, next: NextFuncti
       instantBook: a.instantBook,
       price: a.basePrice,
       effectiveWeekendPrice: a.weekendPrice && a.weekendPrice > 0 ? a.weekendPrice : Math.round(a.basePrice * 1.3),
-      distanceKm: parseFloat(haversineKm(lat, lng, a.coordinates.lat, a.coordinates.lng).toFixed(2)),
+      distanceKm: parseFloat(haversineKm(lat, lng, a.lat, a.lng).toFixed(2)),
     }));
 
     // Merge, filter by radius, sort by distance, limit

@@ -1,6 +1,6 @@
 import type { Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { User } from "../models/User.js";
+import { prisma } from "../config/db.js";
 
 interface DecodedToken {
   id: string;
@@ -64,7 +64,7 @@ export const adminProtect = async (
     }
 
     // Look up admin in database
-    const admin = await User.findById(decoded.id).select("-password");
+    const admin = await prisma.user.findUnique({ where: { id: decoded.id } });
     if (!admin) {
       res
         .status(401)
@@ -85,7 +85,11 @@ export const adminProtect = async (
       return;
     }
 
-    req.user = admin;
+    // Exclude password field from req.user
+    const sanitizedAdmin = { ...admin };
+    delete (sanitizedAdmin as any).password;
+
+    req.user = sanitizedAdmin;
     next();
   } catch (error) {
     res

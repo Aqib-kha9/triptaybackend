@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { User } from "../models/User.js";
-import { Otp } from "../models/Otp.js";
+import bcrypt from "bcryptjs";
+import { prisma } from "../config/db.js";
 
 // ──────────────────────── Helpers ────────────────────────
 
@@ -9,7 +9,6 @@ import { Otp } from "../models/Otp.js";
 // NEVER add: password, bankAccount, bankIFSC, panNumber, gstin,
 //            aadharFront, aadharBack, panCardImage.
 const SAFE_USER_FIELDS = [
-  "_id",
   "id",
   "name",
   "email",
@@ -19,20 +18,21 @@ const SAFE_USER_FIELDS = [
   "role",
   "status",
   "kycStatus",
-  "balanceCoins",
+  "walletBalance",
   "createdAt",
   "updatedAt",
 ] as const;
 
 /** Picks only safe, public-facing fields from a user document or plain object. */
 function sanitizeUserResponse(raw: any) {
-  const obj = raw?.toObject ? raw.toObject() : { ...raw };
   const safe: Record<string, any> = {};
   for (const key of SAFE_USER_FIELDS) {
-    if (obj[key] !== undefined) {
-      safe[key] = obj[key];
+    if (raw[key] !== undefined) {
+      safe[key] = raw[key];
     }
   }
+  // Map 'id' to '_id' for frontend compatibility if needed
+  safe._id = raw.id;
   return safe;
 }
 
@@ -47,7 +47,7 @@ const signToken = (id: string, email: string, role: string): string => {
 
 // Helper to configure cookie and send sanitized JSON payload
 const sendTokenResponse = (user: any, statusCode: number, res: Response) => {
-  const token = signToken(user.id || user._id, user.email, user.role);
+  const token = signToken(user.id, user.email, user.role);
 
   const cookieOptions = {
     expires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
@@ -79,8 +79,10 @@ export const signup = async (req: Request, res: Response, next: NextFunction): P
   try {
     const { name, email, password, phone, role } = req.body;
 
+    const cleanEmail = email.trim().toLowerCase();
+
     // Check if email already registered
-    const existingUser = await User.findOne({ email });
+    const existingUser = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (existingUser) {
       res.status(400).json({ status: "fail", message: "Email is already registered." });
       return;
@@ -94,13 +96,19 @@ export const signup = async (req: Request, res: Response, next: NextFunction): P
       else if (lower === "dual mode") resolvedRole = "Dual Mode";
     }
 
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
     // Create standard user with resolved role
-    const user = await User.create({
-      name,
-      email,
-      password,
-      phone,
-      role: resolvedRole as "Guest" | "Vendor" | "Dual Mode" | "Admin",
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email: cleanEmail,
+        password: hashedPassword,
+        phone: phone || null,
+        role: resolvedRole,
+      },
     });
 
     sendTokenResponse(user, 210, res);
@@ -121,22 +129,23 @@ export const login = async (req: Request, res: Response, next: NextFunction): Pr
       return;
     }
 
+    const cleanEmail = email.trim().toLowerCase();
+
     // 1. Hook for Superadmin Login
     const adminEmail = process.env.ADMIN_EMAIL || "admin@triptay.com";
     const adminPassword = process.env.ADMIN_PASSWORD || "admin_triptay_2026_pass";
 
-    if (email.toLowerCase() === adminEmail.toLowerCase()) {
+    if (cleanEmail === adminEmail.toLowerCase()) {
       if (password === adminPassword) {
         // Authenticated Superadmin session — use safe fields only
         const adminUser = {
           id: "ADMIN-000",
-          _id: "ADMIN-000",
           name: "System Superadmin",
           email: adminEmail,
           role: "Admin",
           status: "Active",
           kycStatus: "Approved",
-          balanceCoins: 0,
+          walletBalance: 0,
         };
         sendTokenResponse(adminUser, 200, res);
         return;
@@ -147,14 +156,14 @@ export const login = async (req: Request, res: Response, next: NextFunction): Pr
     }
 
     // 2. Query standard users in DB
-    const user = await User.findOne({ email }).select("+password");
+    const user = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (!user) {
       res.status(401).json({ status: "fail", message: "Invalid email or password." });
       return;
     }
 
     // Verify Password
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       res.status(401).json({ status: "fail", message: "Invalid email or password." });
       return;
@@ -197,8 +206,7 @@ export const getMe = async (req: any, res: Response, next: NextFunction): Promis
       return;
     }
 
-    // Reload from DB to get fresh data (password excluded by schema)
-    const user = await User.findById(req.user._id || req.user.id);
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) {
       res.status(401).json({ status: "fail", message: "User account not found." });
       return;
@@ -220,35 +228,41 @@ export const getMe = async (req: any, res: Response, next: NextFunction): Promis
 // @access  Public
 export const sendOtp = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-      const { identifier } = req.body;
-      if (!identifier) {
-        res.status(400).json({ status: "fail", message: "Please supply an email or phone number." });
-        return;
-      }
-
-      const cleanId = identifier.trim().toLowerCase();
-
-      // Generate 6-digit numeric OTP
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-
-      // Upsert OTP record (new code each time)
-      await Otp.findOneAndUpdate(
-        { identifier: cleanId },
-        { code, createdAt: new Date() },
-        { upsert: true, returnDocument: "after" }
-      );
-
-      console.log(`[OTP] ${cleanId} → ${code}`);
-
-      res.status(200).json({
-        status: "success",
-        message: `OTP sent to ${cleanId}.`,
-        devCode: code,
-      });
-    } catch (error) {
-      next(error);
+    const { identifier } = req.body;
+    if (!identifier) {
+      res.status(400).json({ status: "fail", message: "Please supply an email or phone number." });
+      return;
     }
-  };
+
+    const cleanId = identifier.trim().toLowerCase();
+
+    // Generate 6-digit numeric OTP
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Delete any existing OTP records for this identifier (ensures uniqueness)
+    await prisma.otp.deleteMany({ where: { identifier: cleanId } });
+
+    // Create a new OTP record expiring in 10 minutes
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await prisma.otp.create({
+      data: {
+        identifier: cleanId,
+        code,
+        expiresAt,
+      },
+    });
+
+    console.log(`[OTP] ${cleanId} → ${code}`);
+
+    res.status(200).json({
+      status: "success",
+      message: `OTP sent to ${cleanId}.`,
+      devCode: code,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 // @desc    Verify OTP code and either login or signal registration
 // @route   POST /api/auth/verify-otp
@@ -262,23 +276,29 @@ export const verifyOtp = async (req: Request, res: Response, next: NextFunction)
     }
 
     const cleanId = identifier.trim().toLowerCase();
-    const otpRecord = await Otp.findOne({ identifier: cleanId, code });
+    const otpRecord = await prisma.otp.findFirst({
+      where: {
+        identifier: cleanId,
+        code,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
     if (!otpRecord) {
       res.status(400).json({ status: "fail", message: "Invalid or expired verification code." });
       return;
     }
 
     // OTP is single-use — delete after successful verification
-    await Otp.deleteOne({ _id: otpRecord._id });
+    await prisma.otp.delete({ where: { id: otpRecord.id } });
 
-    const user = await User.findOne({ email: cleanId });
+    const user = await prisma.user.findUnique({ where: { email: cleanId } });
     if (user) {
       if (user.status === "Blocked") {
         res.status(403).json({ status: "fail", message: "This account has been suspended by administrators." });
         return;
       }
 
-      // Sanitized response — password, bank details, and KYC documents are NEVER exposed here
       sendTokenResponse(user, 200, res);
     } else {
       // User does not exist → Tell frontend to complete profile registration
@@ -307,7 +327,7 @@ export const registerOtp = async (req: Request, res: Response, next: NextFunctio
     const cleanId = identifier.trim().toLowerCase();
 
     // Double check if email already registered
-    const existingUser = await User.findOne({ email: cleanId });
+    const existingUser = await prisma.user.findUnique({ where: { email: cleanId } });
     if (existingUser) {
       res.status(400).json({ status: "fail", message: "Email/Identifier is already registered." });
       return;
@@ -321,22 +341,22 @@ export const registerOtp = async (req: Request, res: Response, next: NextFunctio
       else if (lower === "dual mode") resolvedRole = "Dual Mode";
     }
 
-    // For Vendor/Host roles, set kycStatus to "Pending" so they go through onboarding
-    // For Guest, kycStatus is "Not Submitted" (default)
-    const isVendorType = resolvedRole === "Vendor" || resolvedRole === "Dual Mode";
-
     // Generate a secure random password since schema requires password
     const randomPassword = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(randomPassword, salt);
 
     // Create new user profile in DB
-    const user = await User.create({
-      name,
-      email: cleanId,
-      password: randomPassword,
-      phone: cleanId.match(/^\d+$/) ? cleanId : undefined,
-      role: resolvedRole as "Guest" | "Vendor" | "Dual Mode" | "Admin",
-      status: "Active",
-      kycStatus: "Not Submitted",
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email: cleanId,
+        password: hashedPassword,
+        phone: cleanId.match(/^\d+$/) ? cleanId : null,
+        role: resolvedRole,
+        status: "Active",
+        kycStatus: "Not Submitted",
+      },
     });
 
     sendTokenResponse(user, 210, res);
@@ -360,35 +380,38 @@ export const submitKyc = async (req: any, res: Response, next: NextFunction): Pr
       return;
     }
 
-    const userId = req.user?.id || req.user?._id;
+    const userId = req.user?.id;
     if (!userId) {
       res.status(401).json({ status: "fail", message: "User not authenticated." });
       return;
     }
 
-    const user = await User.findById(userId);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       res.status(404).json({ status: "fail", message: "User not found." });
       return;
     }
 
     // Update KYC fields and set status to "Pending" for admin review
-    user.panNumber = panNumber;
-    user.gstin = gstin;
-    user.bankAccount = bankAccount;
-    user.bankIFSC = bankIFSC;
-    if (aadharFront) user.aadharFront = aadharFront;
-    if (aadharBack) user.aadharBack = aadharBack;
-    if (panCardImage) user.panCardImage = panCardImage;
-    user.kycStatus = "Pending";
-    await user.save();
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        panNumber,
+        gstin,
+        bankAccount,
+        bankIFSC,
+        aadharFront: aadharFront || user.aadharFront,
+        aadharBack: aadharBack || user.aadharBack,
+        panCardImage: panCardImage || user.panCardImage,
+        kycStatus: "Pending",
+      },
+    });
 
-    // Return only safe fields — sensitive KYC data stays on server
     res.status(200).json({
       status: "success",
       message: "KYC documents submitted successfully. Pending admin approval.",
       data: {
-        user: sanitizeUserResponse(user),
+        user: sanitizeUserResponse(updatedUser),
       },
     });
   } catch (error) {
@@ -409,7 +432,7 @@ export const googleLogin = async (req: Request, res: Response, next: NextFunctio
 
     const cleanEmail = email.trim().toLowerCase();
 
-    let user = await User.findOne({ email: cleanEmail });
+    let user = await prisma.user.findUnique({ where: { email: cleanEmail } });
 
     if (user) {
       if (user.status === "Blocked") {
@@ -419,12 +442,17 @@ export const googleLogin = async (req: Request, res: Response, next: NextFunctio
     } else {
       // Register new user automatically
       const randomPassword = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
-      user = await User.create({
-        name,
-        email: cleanEmail,
-        password: randomPassword,
-        role: "Guest",
-        status: "Active",
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(randomPassword, salt);
+
+      user = await prisma.user.create({
+        data: {
+          name,
+          email: cleanEmail,
+          password: hashedPassword,
+          role: "Guest",
+          status: "Active",
+        },
       });
     }
 
@@ -444,7 +472,7 @@ export const getProfile = async (req: any, res: Response, next: NextFunction): P
       return;
     }
 
-    const user = await User.findById(req.user._id || req.user.id);
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) {
       res.status(404).json({ status: "fail", message: "User not found." });
       return;
@@ -455,8 +483,8 @@ export const getProfile = async (req: any, res: Response, next: NextFunction): P
       status: "success",
       data: {
         user: {
-          _id: user._id,
-          id: user._id,
+          _id: user.id,
+          id: user.id,
           name: user.name,
           email: user.email,
           phone: user.phone || "",
@@ -473,8 +501,8 @@ export const getProfile = async (req: any, res: Response, next: NextFunction): P
           aadharFront: user.aadharFront || "",
           aadharBack: user.aadharBack || "",
           panCardImage: user.panCardImage || "",
-          createdAt: (user as any).createdAt,
-          updatedAt: (user as any).updatedAt,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
         },
       },
     });
@@ -493,8 +521,8 @@ export const updateProfile = async (req: any, res: Response, next: NextFunction)
       return;
     }
 
-    const userId = req.user._id || req.user.id;
-    const user = await User.findById(userId);
+    const userId = req.user.id;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       res.status(404).json({ status: "fail", message: "User not found." });
       return;
@@ -526,20 +554,18 @@ export const updateProfile = async (req: any, res: Response, next: NextFunction)
       return;
     }
 
-    const updatedUser = await User.findByIdAndUpdate(userId, { $set: updates }, { returnDocument: "after", runValidators: true });
-
-    if (!updatedUser) {
-      res.status(404).json({ status: "fail", message: "User not found after update." });
-      return;
-    }
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updates,
+    });
 
     res.status(200).json({
       status: "success",
       message: "Profile updated successfully.",
       data: {
         user: {
-          _id: updatedUser._id,
-          id: updatedUser._id,
+          _id: updatedUser.id,
+          id: updatedUser.id,
           name: updatedUser.name,
           email: updatedUser.email,
           phone: updatedUser.phone || "",
@@ -556,8 +582,8 @@ export const updateProfile = async (req: any, res: Response, next: NextFunction)
           aadharFront: updatedUser.aadharFront || "",
           aadharBack: updatedUser.aadharBack || "",
           panCardImage: updatedUser.panCardImage || "",
-          createdAt: (updatedUser as any).createdAt,
-          updatedAt: (updatedUser as any).updatedAt,
+          createdAt: updatedUser.createdAt,
+          updatedAt: updatedUser.updatedAt,
         },
       },
     });
@@ -588,21 +614,25 @@ export const changePassword = async (req: any, res: Response, next: NextFunction
       return;
     }
 
-    // Re-fetch with password field
-    const user = await User.findById(req.user._id || req.user.id).select("+password");
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) {
       res.status(404).json({ status: "fail", message: "User not found." });
       return;
     }
 
-    const isMatch = await user.comparePassword(currentPassword);
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
       res.status(401).json({ status: "fail", message: "Current password is incorrect." });
       return;
     }
 
-    user.password = newPassword;
-    await user.save();
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { password: hashedPassword },
+    });
 
     res.status(200).json({
       status: "success",

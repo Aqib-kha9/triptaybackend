@@ -1,0 +1,275 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  password      String
+  phone         String?
+  avatar        String?
+  website       String?
+  role          String   @default("Guest")
+  status        String   @default("Active")
+  walletBalance Float    @default(0)
+  panNumber     String?
+  gstin         String?
+  bankAccount   String?
+  bankIFSC      String?
+  kycStatus     String   @default("Not Submitted")
+  aadharFront   String?
+  aadharBack    String?
+  panCardImage  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Otp {
+  id         String   @id @default(cuid())
+  identifier String
+  code       String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([identifier, code])
+}
+
+model Destination {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  state           String
+  city            String
+  image           String
+  category        String
+  lat             Float
+  lng             Float
+  description     String   @db.Text
+  isActive        Boolean  @default(true)
+  popularityScore Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Availability {
+  id           String   @id @default(cuid())
+  hostId       String
+  itemId       String
+  itemType     String
+  blockedDates String[]
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([itemId, itemType])
+}
+
+model Notification {
+  id           String    @id @default(cuid())
+  recipientId  String
+  type         String
+  title        String
+  description  String
+  link         String?
+  metadata     Json?
+  isRead       Boolean   @default(false)
+  readAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Conversation {
+  id                  String    @id @default(cuid())
+  participants        String[]
+  listingId           String?
+  activityId          String?
+  bookingTitle        String?
+  bookingDateRange    String?
+  bookingType         String?
+  lastMessageText     String?
+  lastMessageSenderId String?
+  lastMessageSentAt   DateTime?
+  unreadCount         Json?
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+model Message {
+  id             String    @id @default(cuid())
+  conversationId String
+  senderId       String
+  type           String    @default("text")
+  text           String?   @db.Text
+  mediaUrl       String?
+  mediaType      String?
+  fileName       String?
+  fileSize       Float?
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model Testimonial {
+  id        String   @id @default(cuid())
+  name      String
+  role      String
+  text      String   @db.Text
+  image     String?  @default("")
+  order     Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Wishlist {
+  id        String   @id @default(cuid())
+  userId    String
+  itemId    String
+  itemType  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, itemId, itemType])
+}
+
+model Listing {
+  id                  String   @id @default(cuid())
+  hostId              String
+  name                String
+  slug                String   @unique
+  description         String   @db.Text
+  summary             String
+  propertyType        String
+  floorNumber         Int?
+  totalFloors         Int?
+  propertySizeSqFt    Int?
+  yearBuilt           Int?
+  isEntirePlace       Boolean  @default(true)
+  address             String   @db.Text
+  city                String
+  state               String
+  country             String   @default("India")
+  zipCode             String
+  lat                 Float
+  lng                 Float
+  landmark            String?
+  maxGuests           Int
+  bedrooms            Int
+  beds                Int
+  bathrooms           Int
+  extraMattresses     Int      @default(0)
+  basePrice           Float
+  weekendPrice        Float?
+  seasonalPrices      Json?
+  cleaningFee         Float    @default(0)
+  securityDeposit     Float    @default(0)
+  extraGuestPrice     Float    @default(0)
+  taxes               Float    @default(0)
+  minStay             Int      @default(1)
+  maxStay             Int      @default(0)
+  checkInTime         String   @default("12:00 PM")
+  checkOutTime        String   @default("11:00 AM")
+  flexibleCheckIn     Boolean  @default(false)
+  flexibleCheckOut    Boolean  @default(false)
+  amenities           String[]
+  meals               Json?
+  hasKitchen          Boolean  @default(false)
+  kitchenDetails      String?  @db.Text
+  houseRules          Json?
+  cancellationPolicy  String   @default("Moderate")
+  cancellationDetails String?  @db.Text
+  isPetFriendly       Boolean  @default(false)
+  petRules            String?  @db.Text
+  isSmokingAllowed    Boolean  @default(false)
+  isPartyAllowed      Boolean  @default(false)
+  quietHoursStart     String?
+  quietHoursEnd       String?
+  nearbyPlaces        Json?
+  media               Json?
+  videoTourUrl        String?
+  instantBook         Boolean  @default(true)
+  advanceNoticeHours  Int      @default(0)
+  maxGuestsPerBooking Int?
+  status              String   @default("draft")
+  isActive            Boolean  @default(true)
+  isFeatured          Boolean  @default(false)
+  adminNotes          String?  @db.Text
+  avgRating           Float    @default(0)
+  totalReviews        Int      @default(0)
+  languagesSpoken     String[]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model Activity {
+  id                  String   @id @default(cuid())
+  hostId              String
+  name                String
+  slug                String   @unique
+  description         String   @db.Text
+  summary             String
+  activityType        String
+  difficulty          String
+  address             String   @db.Text
+  city                String
+  state               String
+  country             String   @default("India")
+  zipCode             String
+  lat                 Float
+  lng                 Float
+  landmark            String?
+  meetingPoint        String?  @db.Text
+  durationHours       Float
+  durationDays        Float    @default(0)
+  startTimes          String[]
+  availability        String   @default("Daily")
+  availabilityNotes   String?  @db.Text
+  minAge              Int      @default(0)
+  maxGroupSize        Int
+  minGroupSize        Int      @default(1)
+  basePrice           Float
+  weekendPrice        Float?
+  childPrice          Float?
+  foreignerPrice      Float?
+  seasonalPrices      Json?
+  taxes               Float    @default(0)
+  securityDeposit     Float    @default(0)
+  equipmentProvided   String[]
+  equipmentRequired   String[]
+  safetyGuidelines    String?  @db.Text
+  hasInsurance        Boolean  @default(false)
+  certifiedGuides     Boolean  @default(false)
+  guideRatio          String?
+  included            String[]
+  excluded            String[]
+  houseRules          Json?
+  cancellationPolicy  String   @default("Moderate")
+  cancellationDetails String?  @db.Text
+  isPetFriendly       Boolean  @default(false)
+  petRules            String?  @db.Text
+  restrictions        String?  @db.Text
+  nearbyPlaces        Json?
+  media               Json?
+  videoTourUrl        String?
+  instantBook         Boolean  @default(true)
+  advanceNoticeHours  Int      @default(0)
+  maxGuestsPerBooking Int?
+  status              String   @default("draft")
+  isActive            Boolean  @default(true)
+  isFeatured          Boolean  @default(false)
+  adminNotes          String?  @db.Text
+  avgRating           Float    @default(0)
+  totalReviews        Int      @default(0)
+  languagesSpoken     String[]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}

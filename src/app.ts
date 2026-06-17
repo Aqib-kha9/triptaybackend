@@ -33,6 +33,7 @@ app.use(helmet());
 const allowedOrigins = [
   process.env.CLIENT_URL as string,
   "http://localhost:3000",
+  "http://192.168.31.191:3000",
   "http://localhost:3001",
   "https://triptay-eight.vercel.app",
   "https://triptay.vercel.app",

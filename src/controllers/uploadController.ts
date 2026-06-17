@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import cloudinary from "../config/cloudinary.js";
-import { User } from "../models/User.js";
+import { prisma } from "../config/db.js";
 import { validateMagicBytes } from "../utils/validateMagicBytes.js";
 
 // @desc    Upload a KYC document (Aadhar Front, Aadhar Back, PAN Card) to Cloudinary
@@ -39,7 +39,7 @@ export const uploadDocument = async (req: any, res: Response, next: NextFunction
       return;
     }
 
-    const userId = req.user?.id || req.user?._id;
+    const userId = req.user?.id;
     if (!userId) {
       res.status(401).json({ status: "fail", message: "User not authenticated." });
       return;
@@ -55,8 +55,11 @@ export const uploadDocument = async (req: any, res: Response, next: NextFunction
     });
 
     // Persist the document URL to the user record
-    await User.findByIdAndUpdate(userId, {
-      [documentType]: uploaded.secure_url,
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        [documentType]: uploaded.secure_url,
+      },
     });
 
     res.status(200).json({
@@ -95,7 +98,7 @@ export const uploadAvatar = async (req: any, res: Response, next: NextFunction):
       return;
     }
 
-    const userId = req.user?.id || req.user?._id;
+    const userId = req.user?.id;
     if (!userId) {
       res.status(401).json({ status: "fail", message: "User not authenticated." });
       return;
@@ -108,6 +111,14 @@ export const uploadAvatar = async (req: any, res: Response, next: NextFunction):
       resource_type: "image",
       public_id: `avatar_${Date.now()}`,
       transformation: { width: 400, height: 400, crop: "fill", quality: "auto" },
+    });
+
+    // Persist avatar URL to the user record
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        avatar: uploaded.secure_url,
+      },
     });
 
     res.status(200).json({

@@ -1,10 +1,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import mongoose from "mongoose";
-import Destination from "./src/models/Destination.js";
-
-const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/triptay";
+import { prisma } from "./src/config/db.js";
 
 interface SeedDest {
   name: string;
@@ -202,29 +199,40 @@ const destinations: SeedDest[] = [
 
 async function seedDestinations() {
   try {
-    console.log("🔌 Connecting to MongoDB...");
-    await mongoose.connect(MONGO_URI);
-    console.log("✅ MongoDB connected.\n");
+    console.log("🔌 Connecting to database...");
 
     let created = 0;
     let skipped = 0;
 
     for (const dest of destinations) {
-      const existing = await Destination.findOne({ slug: dest.slug });
+      const existing = await prisma.destination.findFirst({
+        where: { slug: dest.slug },
+      });
       if (existing) {
         console.log(`⏭️  "${dest.name}" already exists — skipping.`);
         skipped++;
         continue;
       }
 
-      await Destination.create(dest);
+      await prisma.destination.create({
+        data: {
+          name: dest.name,
+          slug: dest.slug,
+          state: dest.state,
+          city: dest.city,
+          image: dest.image,
+          category: dest.category,
+          lat: dest.coordinates.lat,
+          lng: dest.coordinates.lng,
+          description: dest.description,
+          popularityScore: dest.popularityScore,
+        }
+      });
       console.log(`✅ "${dest.name}" created (${dest.category}, ${dest.state})`);
       created++;
     }
 
     console.log(`\n🎉 Done! Created: ${created}, Skipped: ${skipped}, Total: ${destinations.length}`);
-    await mongoose.disconnect();
-    console.log("🔌 Disconnected.");
     process.exit(0);
   } catch (err) {
     console.error("❌ Seeder failed:", err);

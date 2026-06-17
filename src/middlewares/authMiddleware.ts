@@ -1,6 +1,6 @@
 import type { Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { User } from "../models/User.js";
+import { prisma } from "../config/db.js";
 
 interface DecodedToken {
   id: string;
@@ -49,7 +49,7 @@ export const protect = async (req: any, res: Response, next: NextFunction): Prom
     }
 
     // Retrieve active standard User from database
-    const user = await User.findById(decoded.id);
+    const user = await prisma.user.findUnique({ where: { id: decoded.id } });
     if (!user) {
       res.status(401).json({ status: "fail", message: "User session expired or user no longer exists." });
       return;

@@ -9,6 +9,8 @@ import {
   bulkBlock,
   clearBlockedDates,
 } from "../controllers/availabilityController.js";
+import { validate } from "../validators/middleware.js";
+import { schemas } from "../validators/schemas.js";
 
 const router = Router();
 
@@ -24,13 +26,13 @@ router.get("/items", getVendorItems as any);
 router.get("/:itemType/:itemId", getAvailability as any);
 
 // Block specific dates
-router.post("/:itemType/:itemId/block", blockDates as any);
+router.post("/:itemType/:itemId/block", validate(schemas.availability.blockDates), blockDates as any);
 
 // Unblock specific dates
-router.post("/:itemType/:itemId/unblock", unblockDates as any);
+router.post("/:itemType/:itemId/unblock", validate(schemas.availability.unblockDates), unblockDates as any);
 
 // Bulk block (weekends, weekdays, full month, date range)
-router.post("/:itemType/:itemId/bulk-block", bulkBlock as any);
+router.post("/:itemType/:itemId/bulk-block", validate(schemas.availability.bulkBlock), bulkBlock as any);
 
 // Clear all blocked dates
 router.delete("/:itemType/:itemId/clear", clearBlockedDates as any);

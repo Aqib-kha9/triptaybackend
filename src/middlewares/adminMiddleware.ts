@@ -90,6 +90,7 @@ export const adminProtect = async (
     delete (sanitizedAdmin as any).password;
 
     req.user = sanitizedAdmin;
+    req.admin = sanitizedAdmin;
     next();
   } catch (error) {
     res

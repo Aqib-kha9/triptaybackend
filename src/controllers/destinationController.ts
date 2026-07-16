@@ -1,396 +1,136 @@
-import type { Request, Response, NextFunction } from "express";
-import { prisma } from "../config/db.js";
-import cloudinary from "../config/cloudinary.js";
-import { validateMagicBytes } from "../utils/validateMagicBytes.js";
+import type { Response, NextFunction } from "express";
+import * as destinationService from "../services/destination.service.js";
 
-// ─── Helper: auto-generate slug from name ───
-function generateSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
+// ──────────────────────── Public Controllers ────────────────────────
 
-// ─── Helper: ensure unique slug (append counter if needed) ───
-async function ensureUniqueSlug(baseSlug: string, excludeId?: string): Promise<string> {
-  let slug = baseSlug;
-  let counter = 1;
-  while (true) {
-    const existing = await prisma.destination.findFirst({
-      where: {
-        slug,
-        id: excludeId ? { not: excludeId } : undefined,
-      },
-    });
-    if (!existing) break;
-    slug = `${baseSlug}-${counter}`;
-    counter++;
-  }
-  return slug;
-}
-
-// Helper to map flat database lat/lng to frontend-compatible coordinates object
-function mapDestinationResponse(dest: any) {
-  if (!dest) return null;
-  const mapped = {
-    ...dest,
-    _id: dest.id,
-    coordinates: {
-      lat: dest.lat,
-      lng: dest.lng,
-    },
-  };
-  delete mapped.lat;
-  delete mapped.lng;
-  return mapped;
-}
-
-// ─── GET /api/destinations — public, paginated, sorted by popularity ───
-export const getAllDestinations = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+// @desc    Get all destinations (public)
+// @route   GET /api/destinations
+// @access  Public
+export const getAllDestinations = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit as string) || 12));
-    const category = req.query.category as string | undefined;
-    const skip = (page - 1) * limit;
-
-    const filter: any = { isActive: true };
-    if (category && ["Nature", "Adventure", "Historical", "Spiritual"].includes(category)) {
-      filter.category = category;
-    }
-
-    const [destinations, total] = await Promise.all([
-      prisma.destination.findMany({
-        where: filter,
-        orderBy: [{ popularityScore: "desc" }, { createdAt: "desc" }],
-        skip,
-        take: limit,
-      }),
-      prisma.destination.count({
-        where: filter,
-      }),
-    ]);
-
-    const mapped = destinations.map(mapDestinationResponse);
+    const { page, limit, category } = req.query;
+    const result = await destinationService.getAllDestinations(page, limit, category);
 
     res.status(200).json({
       status: "success",
+      results: result.destinations.length,
+      pagination: result.pagination,
       data: {
-        destinations: mapped,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages: Math.ceil(total / limit),
-        },
+        destinations: result.destinations,
       },
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
-// ─── GET /api/destinations/:slug — public, single destination by slug ───
-export const getDestination = async (
-  req: any,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+// @desc    Get single destination by slug (public)
+// @route   GET /api/destinations/:slug
+// @access  Public
+export const getDestination = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const destination = await prisma.destination.findFirst({
-      where: {
-        slug: req.params.slug,
-        isActive: true,
-      },
-    });
-
-    if (!destination) {
-      res.status(404).json({ status: "fail", message: "Destination not found." });
-      return;
-    }
+    const result = await destinationService.getDestination(req.params.slug);
 
     res.status(200).json({
       status: "success",
-      data: { destination: mapDestinationResponse(destination) },
+      data: { destination: result.destination },
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
-// ─── POST /api/admin/destinations — admin creates a destination ───
-export const createDestination = async (
-  req: any,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+// ──────────────────────── Admin Controllers ────────────────────────
+
+// @desc    Create destination (admin)
+// @route   POST /api/admin/destinations
+// @access  Private (Admin)
+export const createDestination = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { name, state, city, image, category, coordinates, description } = req.body;
-
-    // Validate required fields
-    if (!name || !state || !city || !image || !category || !coordinates) {
-      res.status(400).json({
-        status: "fail",
-        message: "Missing required fields: name, state, city, image, category, coordinates",
-      });
-      return;
-    }
-
-    if (!["Nature", "Adventure", "Historical", "Spiritual"].includes(category)) {
-      res.status(400).json({
-        status: "fail",
-        message: "Invalid category. Must be: Nature, Adventure, Historical, or Spiritual",
-      });
-      return;
-    }
-
-    if (
-      typeof coordinates.lat !== "number" ||
-      typeof coordinates.lng !== "number"
-    ) {
-      res.status(400).json({
-        status: "fail",
-        message: "Coordinates must include numeric lat and lng",
-      });
-      return;
-    }
-
-    const baseSlug = generateSlug(name);
-    const slug = await ensureUniqueSlug(baseSlug);
-
-    const destination = await prisma.destination.create({
-      data: {
-        name,
-        slug,
-        state,
-        city,
-        image,
-        category,
-        lat: coordinates.lat,
-        lng: coordinates.lng,
-        description: description || "",
-        popularityScore: 0,
-      },
-    });
+    const result = await destinationService.createDestination(req.body);
 
     res.status(201).json({
       status: "success",
-      data: { destination: mapDestinationResponse(destination) },
+      message: "Destination created successfully.",
+      data: { destination: result.destination },
     });
-  } catch (err: any) {
-    // Handle duplicate slug race condition (P2002 in Prisma)
-    if (err.code === "P2002") {
-      res.status(409).json({
-        status: "fail",
-        message: "A destination with this name/slug already exists.",
-      });
-      return;
-    }
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
-// ─── PUT /api/admin/destinations/:id — admin updates a destination ───
-export const updateDestination = async (
-  req: any,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+// @desc    Update destination (admin)
+// @route   PATCH /api/admin/destinations/:id
+// @access  Private (Admin)
+export const updateDestination = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { name, state, city, image, category, coordinates, description, isActive, popularityScore } =
-      req.body;
-
-    const destination = await prisma.destination.findUnique({
-      where: { id: req.params.id },
-    });
-    if (!destination) {
-      res.status(404).json({ status: "fail", message: "Destination not found." });
-      return;
-    }
-
-    const updateData: any = {};
-
-    if (name !== undefined) {
-      updateData.name = name;
-      const newSlug = generateSlug(name);
-      updateData.slug = await ensureUniqueSlug(newSlug, destination.id);
-    }
-    if (state !== undefined) updateData.state = state;
-    if (city !== undefined) updateData.city = city;
-    if (image !== undefined) updateData.image = image;
-    if (category !== undefined) {
-      if (!["Nature", "Adventure", "Historical", "Spiritual"].includes(category)) {
-        res.status(400).json({
-          status: "fail",
-          message: "Invalid category. Must be: Nature, Adventure, Historical, or Spiritual",
-        });
-        return;
-      }
-      updateData.category = category;
-    }
-    if (coordinates !== undefined) {
-      if (
-        typeof coordinates.lat !== "number" ||
-        typeof coordinates.lng !== "number"
-      ) {
-        res.status(400).json({
-          status: "fail",
-          message: "Coordinates must include numeric lat and lng",
-        });
-        return;
-      }
-      updateData.lat = coordinates.lat;
-      updateData.lng = coordinates.lng;
-    }
-    if (description !== undefined) updateData.description = description;
-    if (isActive !== undefined) updateData.isActive = Boolean(isActive);
-    if (popularityScore !== undefined) updateData.popularityScore = popularityScore;
-
-    const updated = await prisma.destination.update({
-      where: { id: req.params.id },
-      data: updateData,
-    });
+    const result = await destinationService.updateDestination(req.params.id, req.body);
 
     res.status(200).json({
       status: "success",
-      data: { destination: mapDestinationResponse(updated) },
+      message: "Destination updated successfully.",
+      data: { destination: result.destination },
     });
-  } catch (err: any) {
-    if (err.code === "P2002") {
-      res.status(409).json({
-        status: "fail",
-        message: "A destination with this slug already exists.",
-      });
-      return;
-    }
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
-// ─── DELETE /api/admin/destinations/:id — admin deletes a destination ───
-export const deleteDestination = async (
-  req: any,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+// @desc    Delete destination (admin)
+// @route   DELETE /api/admin/destinations/:id
+// @access  Private (Admin)
+export const deleteDestination = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const destination = await prisma.destination.findUnique({
-      where: { id: req.params.id },
-    });
-
-    if (!destination) {
-      res.status(404).json({ status: "fail", message: "Destination not found." });
-      return;
-    }
-
-    await prisma.destination.delete({
-      where: { id: req.params.id },
-    });
+    await destinationService.deleteDestination(req.params.id);
 
     res.status(200).json({
       status: "success",
-      message: `Destination "${destination.name}" deleted successfully.`,
+      message: "Destination deleted successfully.",
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
-// ─── GET /api/admin/destinations — admin lists all destinations (including inactive) ───
-export const adminListDestinations = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+// @desc    Admin list destinations
+// @route   GET /api/admin/destinations
+// @access  Private (Admin)
+export const adminListDestinations = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
-    const category = req.query.category as string | undefined;
-    const includeInactive = req.query.includeInactive === "true";
-    const skip = (page - 1) * limit;
-
-    const filter: any = {};
-    if (!includeInactive) filter.isActive = true;
-    if (category && ["Nature", "Adventure", "Historical", "Spiritual"].includes(category)) {
-      filter.category = category;
-    }
-
-    const [destinations, total] = await Promise.all([
-      prisma.destination.findMany({
-        where: filter,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: limit,
-      }),
-      prisma.destination.count({
-        where: filter,
-      }),
-    ]);
-
-    const mapped = destinations.map(mapDestinationResponse);
+    const { page, limit, category, includeInactive } = req.query;
+    const result = await destinationService.adminListDestinations(
+      page,
+      limit,
+      category,
+      includeInactive === "true",
+    );
 
     res.status(200).json({
       status: "success",
+      results: result.destinations.length,
+      pagination: result.pagination,
       data: {
-        destinations: mapped,
-        pagination: {
-          page,
-          limit,
-          total,
-          totalPages: Math.ceil(total / limit),
-        },
+        destinations: result.destinations,
       },
     });
-  } catch (err) {
-    next(err);
+  } catch (error) {
+    next(error);
   }
 };
 
-// ─── POST /api/admin/destinations/upload-image — Cloudinary image upload for destinations ───
-export const uploadDestinationImage = async (
-  req: any,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
+// @desc    Upload destination image (admin)
+// @route   POST /api/admin/destinations/:id/image
+// @access  Private (Admin)
+export const uploadDestinationImage = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    if (!req.file) {
-      res.status(400).json({ status: "fail", message: "No file uploaded." });
-      return;
-    }
-
-    if (!req.file.buffer || req.file.buffer.length === 0) {
-      res.status(400).json({ status: "fail", message: "Uploaded file is empty." });
-      return;
-    }
-
-    if (!validateMagicBytes(req.file.buffer, req.file.mimetype)) {
-      res.status(400).json({
-        status: "fail",
-        message: "File content does not match its declared type. Upload rejected for security.",
-      });
-      return;
-    }
-
-    const b64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString("base64")}`;
-
-    const uploaded = await cloudinary.uploader.upload(b64, {
-      folder: "triptay/destinations",
-      resource_type: "image",
-      public_id: `dest_${Date.now()}`,
-      transformation: { width: 1200, height: 800, crop: "fill", quality: "auto" },
+    const result = await destinationService.updateDestination(req.params.id, {
+      image: (req as any).fileUrl || req.body.image,
     });
 
     res.status(200).json({
       status: "success",
       message: "Destination image uploaded successfully.",
-      data: {
-        url: uploaded.secure_url,
-        public_id: uploaded.public_id,
-      },
+      data: { destination: result.destination },
     });
   } catch (error) {
     next(error);

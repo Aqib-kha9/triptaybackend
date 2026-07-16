@@ -8,37 +8,49 @@ generator client {
 }
 
 model User {
-  id            String   @id @default(cuid())
-  name          String
-  email         String   @unique
-  password      String
-  phone         String?
-  avatar        String?
-  website       String?
-  role          String   @default("Guest")
-  status        String   @default("Active")
-  walletBalance Float    @default(0)
-  panNumber     String?
-  gstin         String?
-  bankAccount   String?
-  bankIFSC      String?
-  kycStatus     String   @default("Not Submitted")
-  aadharFront   String?
-  aadharBack    String?
-  panCardImage  String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  name                 String
+  email                String   @unique
+  password             String
+  phone                String?  @unique
+  avatar               String?
+  website              String?
+  role                 String   @default("Guest")
+  status               String   @default("Active")
+  walletBalance        Float    @default(0)
+  panNumber            String?
+  gstin                String?
+  bankAccount          String?
+  bankIFSC             String?
+  kycStatus            String   @default("Not Submitted")
+  aadharFront          String?
+  aadharBack           String?
+  panCardImage         String?
+  // Security hardening fields
+  failedLoginAttempts  Int      @default(0)
+  lockedUntil          DateTime?
+  lastLoginAt          DateTime?
+  lastLoginIp          String?
+  gender               String?
+  bio                  String?
+  // Push notification token
+  fcmToken             String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 model Otp {
   id         String   @id @default(cuid())
   identifier String
-  code       String
+  code       String   // Now stores bcrypt hash of the OTP code
+  purpose    String   @default("login") // login | register | password-reset
+  attempts   Int      @default(0)
   expiresAt  DateTime
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   @@unique([identifier, code])
+  @@index([identifier, purpose])
 }
 
 model Destination {
@@ -177,7 +189,7 @@ model Listing {
   minStay             Int      @default(1)
   maxStay             Int      @default(0)
   checkInTime         String   @default("12:00 PM")
-  checkOutTime        String   @default("11:00 AM")
+  checkOutTime         String   @default("11:00 AM")
   flexibleCheckIn     Boolean  @default(false)
   flexibleCheckOut    Boolean  @default(false)
   amenities           String[]
@@ -272,4 +284,385 @@ model Activity {
   languagesSpoken     String[]
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+}
+
+// ──────────────────────── Phase 1: Core Revenue Engine ────────────────────────
+
+model Booking {
+  id                String    @id @default(cuid())
+  bookingRef        String    @unique
+  userId            String
+  hostId            String
+  itemId            String
+  itemType          String    // listing | activity
+  itemName          String
+  itemSlug          String
+  itemImage         String?
+  // Stay-specific
+  checkIn           DateTime?
+  checkOut          DateTime?
+  nights            Int       @default(0)
+  // Activity-specific
+  activityDate      DateTime?
+  startTime         String?
+  // Common
+  guests            Int       @default(1)
+  adults            Int       @default(1)
+  children          Int       @default(0)
+  // Pricing
+  baseAmount        Float     @default(0)
+  cleaningFee       Float     @default(0)
+  securityDeposit   Float     @default(0)
+  extraGuestCharges Float     @default(0)
+  taxAmount         Float     @default(0)
+  platformFee       Float     @default(0)
+  discountAmount    Float     @default(0)
+  commissionAmount  Float     @default(0)
+  hostPayoutAmount  Float     @default(0)
+  totalAmount       Float     @default(0)
+  // Status
+  status            String    @default("pending") // pending | confirmed | completed | cancelled | rejected | expired
+  paymentStatus     String    @default("pending") // pending | paid | partially_paid | refunded | failed
+  bookingType       String    @default("instant") // instant | request
+  checkInOtp        String?
+  checkInStatus     String    @default("pending") // pending | checked_in | no_show
+  // Cancellation
+  cancellationReason String?  @db.Text
+  cancelledBy        String?
+  cancelledAt       DateTime?
+  refundAmount      Float     @default(0)
+  // Guest details
+  guestName         String?
+  guestEmail        String?
+  guestPhone        String?
+  specialRequests   String?   @db.Text
+  // Coupon
+  couponCode        String?
+  couponId          String?
+  // Payment
+  paymentId        String?
+  paymentGateway    String?   // razorpay | stripe | wallet
+  gatewayOrderId    String?
+  gatewayPaymentId  String?
+  paidAt            DateTime?
+  // Host payout
+  payoutId          String?
+  payoutStatus      String    @default("pending") // pending | processed | failed
+  payoutDate        DateTime?
+  // Timestamps
+  confirmedAt       DateTime?
+  completedAt       DateTime?
+  expiresAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  commissions  Commission[]
+  couponUsages CouponUsage[]
+
+  @@index([userId])
+  @@index([hostId])
+  @@index([itemId, itemType])
+  @@index([status])
+  @@index([paymentStatus])
+}
+
+model Coupon {
+  id              String    @id @default(cuid())
+  code            String    @unique
+  description     String?   @db.Text
+  type            String    @default("percentage") // percentage | flat
+  value           Float
+  maxDiscount      Float?    // cap for percentage coupons
+  minOrderValue    Float     @default(0)
+  scope            String    @default("all") // all | stay | activity
+  itemId           String?   // for stay/activity-specific coupons
+  usageLimit       Int       @default(0) // 0 = unlimited
+  usedCount        Int       @default(0)
+  perUserLimit     Int       @default(1)
+  validFrom        DateTime
+  validUntil       DateTime
+  isActive        Boolean   @default(true)
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([code])
+  @@index([scope, isActive])
+}
+
+model CouponUsage {
+  id          String   @id @default(cuid())
+  couponId    String
+  couponCode  String
+  userId      String
+  bookingId   String?
+  discountAmount Float
+  createdAt   DateTime @default(now())
+
+  // Relations
+  booking Booking? @relation(fields: [bookingId], references: [id])
+
+  @@unique([couponId, userId])
+}
+
+model Payment {
+  id              String    @id @default(cuid())
+  bookingId       String
+  userId          String
+  amount          Float
+  currency        String    @default("INR")
+  gateway         String    @default("razorpay") // razorpay | stripe | payu | wallet
+  gatewayOrderId  String?
+  gatewayPaymentId String?
+  gatewaySignature String?
+  status          String    @default("created") // created | attempted | captured | failed | refunded
+  method          String?   // card | upi | netbanking | wallet
+  description     String?
+  failureReason   String?   @db.Text
+  refundAmount    Float     @default(0)
+  refundId        String?
+  refundedAt      DateTime?
+  metadata        Json?
+  paidAt          DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([bookingId])
+  @@index([userId])
+  @@index([status])
+}
+
+model Payout {
+  id              String    @id @default(cuid())
+  payoutRef       String    @unique
+  hostId          String
+  amount          Float
+  commissionAmount Float    @default(0)
+  netAmount       Float     @default(0)
+  status          String    @default("pending") // pending | processed | failed | cancelled
+  method          String    @default("bank_transfer")
+  bookingIds      String[]
+  invoiceNumber   String?
+  invoiceUrl      String?
+  processedBy     String?
+  processedAt     DateTime?
+  failureReason   String?   @db.Text
+  metadata        Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([hostId])
+  @@index([status])
+}
+
+model Commission {
+  id              String    @id @default(cuid())
+  bookingId       String
+  hostId          String
+  rate            Float     @default(0) // percentage
+  baseAmount      Float     @default(0)
+  commissionAmount Float    @default(0)
+  hostPayoutAmount Float    @default(0)
+  status          String    @default("pending") // pending | processed | reversed
+  payoutId        String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@index([hostId])
+  @@index([status])
+}
+
+// ──────────────────────── Phase 2: Security Hardening ────────────────────────
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorId     String?
+  actorEmail  String?
+  actorRole   String?
+  action      String   // e.g. "USER_LOGIN", "LISTING_APPROVED", "BOOKING_CANCELLED"
+  category    String   @default("general") // auth | listing | activity | booking | payment | admin | system
+  resource    String?  // e.g. "User", "Listing", "Booking"
+  resourceId  String?
+  method      String?  // HTTP method
+  path        String?  // request path
+  ip          String?
+  userAgent   String?
+  statusCode  Int?
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([category])
+  @@index([createdAt])
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([email])
+}
+
+// ──────────────────────── Phase 3: Communication Layer ────────────────────────
+
+model EmailLog {
+  id           String   @id @default(cuid())
+  to           String
+  from         String
+  subject      String
+  body         String   @db.Text
+  template     String?  // template name
+  status       String   @default("sent") // sent | failed | bounced | delivered
+  messageId    String?  // SES message ID
+  error        String?  @db.Text
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([to])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model MarketingContact {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  phone        String?
+  source       String   @default("organic") // organic | booking | signup | import
+  optedIn      Boolean  @default(true)
+  optedOutAt   DateTime?
+  tags         String[]
+  metadata     Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([email])
+  @@index([optedIn])
+}
+
+model FcmToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String
+  deviceType String?  // web | android | ios
+  deviceId  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, token])
+  @@index([userId])
+}
+
+// ──────────────────────── Phase 4: Infrastructure ────────────────────────
+
+model Configuration {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String   @db.Text
+  category    String   @default("general") // commission | payment | email | whatsapp | general
+  description String?
+  isPublic    Boolean  @default(false)
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([key])
+  @@index([category])
+}
+
+// ──────────────────────── Phase 5: Advanced ────────────────────────
+
+model Dispute {
+  id              String    @id @default(cuid())
+  disputeRef      String    @unique
+  bookingId       String
+  raisedBy        String
+  raisedByRole    String    // guest | host
+  againstUserId   String
+  type            String    @default("general") // refund | service | payment | general
+  subject         String
+  description     String    @db.Text
+  evidence        Json?     // array of file paths
+  status          String    @default("open") // open | under_review | resolved | rejected | escalated
+  priority        String    @default("normal") // low | normal | high | urgent
+  resolution      String?   @db.Text
+  refundAmount    Float     @default(0)
+  resolvedBy      String?
+  resolvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([bookingId])
+  @@index([status])
+}
+
+model Campaign {
+  id              String    @id @default(cuid())
+  name            String
+  type            String    @default("email") // email | whatsapp | push
+  subject         String?
+  body            String    @db.Text
+  templateId      String?
+  audience        String    @default("all") // all | guests | hosts | custom
+  audienceFilter  Json?
+  status          String    @default("draft") // draft | scheduled | running | completed | cancelled
+  totalSent       Int       @default(0)
+  totalDelivered  Int       @default(0)
+  totalOpened     Int       @default(0)
+  totalClicked    Int       @default(0)
+  totalFailed     Int       @default(0)
+  scheduledAt     DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([type])
+}
+
+model CampaignTemplate {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  type      String   @default("email") // email | whatsapp | push
+  subject   String?  // for email templates
+  body      String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+}
+
+model Review {
+  id          String   @id @default(cuid())
+  userId      String
+  itemId      String
+  itemType    String   // listing | activity
+  bookingId   String?
+  rating      Int
+  title       String?
+  comment     String?  @db.Text
+  isApproved  Boolean  @default(false)
+  hostReply   String?  @db.Text
+  hostRepliedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, itemId, itemType])
+  @@index([itemId, itemType])
+  @@index([isApproved])
 }

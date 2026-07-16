@@ -12,6 +12,8 @@ import {
   deleteActivityMedia,
   browseActivities,
 } from "../controllers/activityController.js";
+import { validate } from "../validators/middleware.js";
+import { schemas } from "../validators/schemas.js";
 
 const router = Router();
 
@@ -19,10 +21,10 @@ const router = Router();
 router.use(protect as any);
 
 // ── Vendor / Dual Mode: CRUD ──
-router.post("/", restrictTo("Vendor", "Dual Mode") as any, createActivity as any);
+router.post("/", restrictTo("Vendor", "Dual Mode") as any, validate(schemas.activity.create), createActivity as any);
 router.get("/", getMyActivities as any);
 router.get("/:id", getActivity as any);
-router.put("/:id", updateActivity as any);
+router.put("/:id", validate(schemas.activity.update), updateActivity as any);
 router.delete("/:id", deleteActivity as any);
 
 // ── Activity Media (Multer with memoryStorage) ──

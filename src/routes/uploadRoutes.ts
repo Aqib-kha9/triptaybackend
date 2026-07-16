@@ -3,6 +3,8 @@ import multer from "multer";
 import type { Request, Response, NextFunction } from "express";
 import { protect } from "../middlewares/authMiddleware.js";
 import { uploadDocument, uploadAvatar } from "../controllers/uploadController.js";
+import { validate } from "../validators/middleware.js";
+import { schemas } from "../validators/schemas.js";
 
 const router = Router();
 
@@ -51,7 +53,7 @@ router.post("/document", protect, (req: Request, res: Response, next: NextFuncti
     }
     next();
   });
-}, uploadDocument);
+}, validate(schemas.upload.document), uploadDocument);
 
 // POST /api/upload/avatar — protected, single file upload for profile picture
 router.post("/avatar", protect, (req: Request, res: Response, next: NextFunction) => {

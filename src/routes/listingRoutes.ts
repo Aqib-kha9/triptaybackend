@@ -12,6 +12,8 @@ import {
   deleteListingMedia,
   browseListings,
 } from "../controllers/listingController.js";
+import { validate } from "../validators/middleware.js";
+import { schemas } from "../validators/schemas.js";
 
 const router = Router();
 
@@ -19,10 +21,10 @@ const router = Router();
 router.use(protect as any);
 
 // ── Vendor / Dual Mode: CRUD ──
-router.post("/", restrictTo("Vendor", "Dual Mode") as any, createListing as any);
+router.post("/", restrictTo("Vendor", "Dual Mode") as any, validate(schemas.listing.create), createListing as any);
 router.get("/", getMyListings as any);
 router.get("/:id", getListing as any);
-router.put("/:id", updateListing as any);
+router.put("/:id", validate(schemas.listing.update), updateListing as any);
 router.delete("/:id", deleteListing as any);
 
 // ── Listing Media (Multer with memoryStorage) ──

@@ -27,6 +27,7 @@ import communicationRoutes from "./routes/communicationRoutes.js";
 import disputeRoutes from "./routes/disputeRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
+import walletRoutes from "./routes/walletRoutes.js";
 
 // Audit middleware for logging admin/mutation requests
 import { auditMiddleware } from "./services/audit.service.js";
@@ -198,6 +199,7 @@ app.use("/api/destinations", destinationRoutes);
 app.use("/api/listings", listingRoutes);
 app.use("/api/activities", activityRoutes);
 app.use("/api/availability", availabilityRoutes);
+app.use("/api/wallet", walletRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/wishlist", wishlistRoutes);
@@ -214,11 +216,16 @@ app.use("/api/communications", communicationRoutes);
 // Phase 5: Dispute Resolution routes (user-facing)
 app.use("/api/disputes", disputeRoutes);
 
+import offerRoutes from "./routes/offerRoutes.js";
+
 // Phase 5: Search Optimization routes (public)
 app.use("/api/search", searchRoutes);
 
 // Phase 5: Review routes (public read + protected write)
 app.use("/api/reviews", reviewRoutes);
+
+// Offers route (public read + protected write)
+app.use("/api/offers", offerRoutes);
 
 // Health check endpoint
 app.get("/api/health", (_req: Request, res: Response) => {

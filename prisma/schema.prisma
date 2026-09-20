@@ -35,6 +35,7 @@ model User {
   bio                  String?
   // Push notification token
   fcmToken             String?
+  walletTransactions   WalletTransaction[]
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 }
@@ -220,6 +221,30 @@ model Listing {
   languagesSpoken     String[]
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+  
+  // Relations
+  rooms               Room[]
+}
+
+model Room {
+  id          String   @id @default(cuid())
+  listingId   String
+  name        String   // e.g., "Deluxe Room", "Standard Room"
+  description String?  @db.Text
+  maxGuests   Int      // e.g., 3
+  basePrice   Float    // Price per night for this room
+  inventory   Int      @default(1) // Number of identical rooms
+  beds        Int      @default(1)
+  bathrooms   Int      @default(1)
+  amenities   String[]
+  images      String[]
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  listing     Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
 }
 
 model Activity {
@@ -606,7 +631,24 @@ model Dispute {
   updatedAt       DateTime  @updatedAt
 
   @@index([bookingId])
+  @@index([raisedBy])
   @@index([status])
+}
+
+model Offer {
+  id          String   @id @default(cuid())
+  title       String
+  discount    String   // e.g., "Flat 25% OFF"
+  desc        String   // e.g., "Valid on all villa bookings"
+  image       String   // URL
+  bgClass     String   // Tailwind background color class (e.g., "bg-blue-50/50")
+  tag         String   @default("Limited") // e.g., "Limited", "Hot"
+  couponCode  String?  // Optional linked coupon code
+  linkUrl     String?  // URL to redirect the user to when clicked
+  isActive    Boolean  @default(true)
+  order       Int      @default(0) // Display priority
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model Campaign {
@@ -665,4 +707,21 @@ model Review {
   @@unique([userId, itemId, itemType])
   @@index([itemId, itemType])
   @@index([isApproved])
+}
+
+model WalletTransaction {
+  id          String   @id @default(cuid())
+  userId      String
+  amount      Float
+  type        String   // credit | debit
+  title       String
+  description String?
+  status      String   @default("Success") // Success | Pending | Failed
+  referenceId String?  // Optional booking/payment reference
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
 }

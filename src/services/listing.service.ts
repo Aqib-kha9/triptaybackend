@@ -94,6 +94,16 @@ export interface CreateListingInput {
   advanceNoticeHours?: number;
   maxGuestsPerBooking?: number;
   status?: string;
+  rooms?: {
+    name: string;
+    description: string;
+    maxGuests: number;
+    basePrice: number;
+    inventory: number;
+    beds: number;
+    bathrooms: number;
+    amenities: string[];
+  }[];
 }
 
 export interface BrowseListingsQuery {
@@ -103,6 +113,7 @@ export interface BrowseListingsQuery {
   minPrice?: string;
   maxPrice?: string;
   guests?: string;
+  rooms?: string;
   bedrooms?: string;
   bathrooms?: string;
   amenities?: string;
@@ -180,11 +191,13 @@ export async function populateHostForListing(
 async function findListingBySlug(slug: string) {
   let listing = await prisma.listing.findFirst({
     where: { slug, status: "published", isActive: true },
+    include: { rooms: true },
   });
   if (!listing) {
     try {
       listing = await prisma.listing.findFirst({
         where: { id: slug, status: "published", isActive: true },
+        include: { rooms: true },
       });
     } catch {
       // invalid ID format → ignore
@@ -299,6 +312,18 @@ export async function createListing(hostId: string, data: CreateListingInput) {
         : Number(data.maxGuests),
       status: data.status || "draft",
       media: [],
+      rooms: data.rooms && data.rooms.length > 0 ? {
+        create: data.rooms.map((r) => ({
+          name: r.name,
+          description: r.description,
+          maxGuests: r.maxGuests,
+          basePrice: r.basePrice,
+          inventory: r.inventory,
+          beds: r.beds,
+          bathrooms: r.bathrooms,
+          amenities: r.amenities,
+        }))
+      } : undefined,
     },
   });
 
@@ -423,6 +448,23 @@ export async function updateListing(id: string, hostId: string, data: Record<str
       });
       return !!existing;
     });
+  }
+
+  if (data.rooms && Array.isArray(data.rooms)) {
+    // Delete existing rooms and create new ones (simplest approach for now)
+    updateData.rooms = {
+      deleteMany: {},
+      create: data.rooms.map((r: any) => ({
+        name: r.name,
+        description: r.description,
+        maxGuests: r.maxGuests,
+        basePrice: r.basePrice,
+        inventory: r.inventory,
+        beds: r.beds,
+        bathrooms: r.bathrooms,
+        amenities: r.amenities,
+      }))
+    };
   }
 
   const updated = await prisma.listing.update({
@@ -636,8 +678,34 @@ export async function browseListings(query: BrowseListingsQuery) {
       if (query.maxPrice) {
         filter.basePrice = { ...(filter.basePrice as object), lte: parseInt(query.maxPrice, 10) };
       }
-      if (query.guests) filter.maxGuests = { gte: parseInt(query.guests, 10) };
-      if (query.bedrooms) filter.bedrooms = { gte: parseInt(query.bedrooms, 10) };
+      const requestedGuests = query.guests ? parseInt(query.guests, 10) : undefined;
+      const requestedRooms = query.rooms ? parseInt(query.rooms, 10) : undefined;
+      const requestedBedrooms = query.bedrooms ? parseInt(query.bedrooms, 10) : undefined;
+
+      if (requestedGuests !== undefined || requestedRooms !== undefined) {
+        const guests = requestedGuests || 1;
+        const rooms = requestedRooms || 1;
+        const minGuestsPerRoom = Math.ceil(guests / rooms);
+
+        filter.OR = [
+          {
+            isEntirePlace: true,
+            maxGuests: { gte: guests },
+            bedrooms: { gte: Math.max(rooms, requestedBedrooms || 1) },
+          },
+          {
+            isEntirePlace: false,
+            rooms: {
+              some: {
+                maxGuests: { gte: minGuestsPerRoom },
+                inventory: { gte: 1 },
+              },
+            },
+          },
+        ];
+      } else if (requestedBedrooms !== undefined) {
+        filter.bedrooms = { gte: requestedBedrooms };
+      }
       if (query.bathrooms) filter.bathrooms = { gte: parseInt(query.bathrooms, 10) };
       
       if (query.amenities) {
@@ -667,6 +735,7 @@ export async function browseListings(query: BrowseListingsQuery) {
       const [listings, total] = await Promise.all([
         prisma.listing.findMany({
           where: filter,
+          include: { rooms: true },
           orderBy,
           skip,
           take: limit,

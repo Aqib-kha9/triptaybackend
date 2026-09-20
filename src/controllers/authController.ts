@@ -22,7 +22,7 @@ export const signup = async (req: Request, res: Response, next: NextFunction): P
 
     sendTokenCookie(res, result.token);
 
-    res.status(210).json({
+    res.status(200).json({
       status: "success",
       token: result.token,
       data: {
@@ -113,10 +113,13 @@ export const sendOtp = async (req: Request, res: Response, next: NextFunction): 
     const cleanId = identifier.trim().toLowerCase();
     const result = await authService.sendOtp(cleanId, purpose || "login");
 
+    // Never leak the OTP in production. Kept only for local/dev testing where no
+    // SMS/email provider is configured (D4/security hardening).
+    const isProduction = process.env.NODE_ENV === "production";
     res.status(200).json({
       status: "success",
       message: result.message,
-      devCode: result.code,
+      ...(isProduction ? {} : { devCode: result.code }),
     });
   } catch (error) {
     next(error);
@@ -174,7 +177,7 @@ export const registerOtp = async (req: Request, res: Response, next: NextFunctio
 
     sendTokenCookie(res, result.token);
 
-    res.status(210).json({
+    res.status(200).json({
       status: "success",
       token: result.token,
       data: {

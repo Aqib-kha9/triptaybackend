@@ -66,12 +66,22 @@ export function normalizeIdentifier(identifier: string): { email: string; phone:
   if (isEmail) {
     return { email: clean, phone: null };
   }
-  const digitsOnly = clean.replace(/[\s\-\+\(\)]/g, "");
-  const isPhone = /^\+?\d{10,15}$/.test(clean.replace(/[\s\-\(\)]/g, ""));
-  if (isPhone || /^\d+$/.test(digitsOnly)) {
+  
+  // Keep only digits and leading plus
+  const phoneClean = clean.replace(/[^\d+]/g, ""); 
+  
+  // If exactly 10 digits without plus, assume India (+91)
+  let finalPhone = phoneClean;
+  if (/^\d{10}$/.test(finalPhone)) {
+    finalPhone = `+91${finalPhone}`;
+  }
+  
+  if (/^\+?\d{10,15}$/.test(finalPhone)) {
+    // Strip '+' for the synthetic email to be consistent across systems
+    const emailDigits = finalPhone.replace("+", "");
     return {
-      email: `${digitsOnly}@triptay.com`,
-      phone: digitsOnly
+      email: `${emailDigits}@triptay.com`,
+      phone: finalPhone
     };
   }
   return { email: clean, phone: null };

@@ -151,7 +151,7 @@ export const deleteListingMedia = async (req: any, res: Response, next: NextFunc
 // @access  Public
 export const browseListings = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { city, state, propertyType, minPrice, maxPrice, guests, bedrooms, bathrooms, amenities, sort, page, limit } =
+    const { city, state, propertyType, minPrice, maxPrice, guests, rooms, bedrooms, bathrooms, amenities, sort, page, limit } =
       req.query as Record<string, string>;
 
     const result = await listingService.browseListings({
@@ -161,6 +161,7 @@ export const browseListings = async (req: Request, res: Response, next: NextFunc
       minPrice,
       maxPrice,
       guests,
+      rooms,
       bedrooms,
       bathrooms,
       amenities,
@@ -258,52 +259,106 @@ export const getListingAvailability = async (req: Request, res: Response, next: 
     const id = req.params.id as string;
     const now = new Date();
 
-    // 1. Get blocked dates from Availability
+    // 1. Get blocked dates from Availability (host-blocked dates apply to both listing types)
     const availability = await prisma.availability.findUnique({
       where: { itemId_itemType: { itemId: id, itemType: "listing" } },
     });
     const blockedDates = availability ? availability.blockedDates : [];
 
-    // 2. Get active bookings that genuinely block the calendar.
-    //    A booking blocks dates only if it is:
-    //      - "confirmed" (always), OR
-    //      - "pending" AND still within its payment window (expiresAt null or >= now)
-    //    Expired bookings and stale pending bookings (past expiry) are excluded so
-    //    their dates show as available — matching Airbnb/Amazon inventory-hold behaviour
-    //    where an abandoned/failed checkout releases the dates immediately.
-    const bookings = await prisma.booking.findMany({
-      where: {
-        itemId: id,
-        itemType: "listing",
-        status: { in: ["pending", "confirmed"] },
-        OR: [
-          { status: "confirmed" },
-          {
-            status: "pending",
-            OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
-          },
-        ],
-      },
-      select: {
-        checkIn: true,
-        checkOut: true,
-      },
+    // 2. Fetch listing to determine type
+    const listing = await prisma.listing.findUnique({
+      where: { id },
+      select: { isEntirePlace: true, rooms: { select: { id: true, inventory: true } } },
     });
 
-    const bookedDates: string[] = [];
-    bookings.forEach((booking) => {
-      if (!booking.checkIn || !booking.checkOut) return;
-      const start = new Date(booking.checkIn);
-      const end = new Date(booking.checkOut);
-      const current = new Date(start);
-      while (current < end) {
-        const y = current.getFullYear();
-        const m = String(current.getMonth() + 1).padStart(2, "0");
-        const d = String(current.getDate()).padStart(2, "0");
-        bookedDates.push(`${y}-${m}-${d}`);
-        current.setDate(current.getDate() + 1);
+    let bookedDates: string[] = [];
+
+    if (!listing || listing.isEntirePlace) {
+      // ── Entire Place: any active booking blocks all dates ──
+      // A booking blocks dates only if:
+      //   - "confirmed" (always), OR
+      //   - "pending" AND still within its payment window (expiresAt null or >= now)
+      const bookings = await prisma.booking.findMany({
+        where: {
+          itemId: id,
+          itemType: "listing",
+          status: { in: ["pending", "confirmed"] },
+          OR: [
+            { status: "confirmed" },
+            {
+              status: "pending",
+              OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
+            },
+          ],
+        },
+        select: { checkIn: true, checkOut: true },
+      });
+
+      bookings.forEach((booking) => {
+        if (!booking.checkIn || !booking.checkOut) return;
+        const current = new Date(booking.checkIn);
+        const end = new Date(booking.checkOut);
+        while (current < end) {
+          const y = current.getFullYear();
+          const m = String(current.getMonth() + 1).padStart(2, "0");
+          const d = String(current.getDate()).padStart(2, "0");
+          bookedDates.push(`${y}-${m}-${d}`);
+          current.setDate(current.getDate() + 1);
+        }
+      });
+    } else {
+      // ── Room-Based Listing: compute dates where ALL rooms are fully booked ──
+      // For hotel-style listings with multiple independent rooms, a date is only
+      // "fully booked" when every room type's inventory is 0 (Booking.com / MakeMyTrip style).
+      // The detailed per-room inventory check happens at booking time.
+      const roomInventoryMap: Record<string, number> = {};
+      const totalInventory = listing.rooms.reduce((sum, r) => {
+        roomInventoryMap[r.id] = r.inventory;
+        return sum + r.inventory;
+      }, 0);
+
+      if (totalInventory > 0) {
+        const bookings = await prisma.booking.findMany({
+          where: {
+            itemId: id,
+            itemType: "listing",
+            status: { in: ["pending", "confirmed"] },
+            OR: [
+              { status: "confirmed" },
+              {
+                status: "pending",
+                OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
+              },
+            ],
+          },
+          select: { checkIn: true, checkOut: true, roomSelections: true },
+        });
+
+        // Build a map: date -> total booked rooms across all types
+        const dateBookedMap: Record<string, number> = {};
+        bookings.forEach((booking) => {
+          if (!booking.checkIn || !booking.checkOut) return;
+          const selections = booking.roomSelections as Record<string, number> | null;
+          if (!selections) return;
+          const totalBooked = Object.values(selections).reduce((sum, qty) => sum + qty, 0);
+          const current = new Date(booking.checkIn);
+          const end = new Date(booking.checkOut);
+          while (current < end) {
+            const dateStr = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}-${String(current.getDate()).padStart(2, "0")}`;
+            dateBookedMap[dateStr] = (dateBookedMap[dateStr] || 0) + totalBooked;
+            current.setDate(current.getDate() + 1);
+          }
+        });
+
+        // Only mark as booked if total booked >= total available inventory
+        bookedDates = Object.entries(dateBookedMap)
+          .filter(([, qty]) => qty >= totalInventory)
+          .map(([date]) => date);
       }
-    });
+    }
+
+    // Deduplicate bookedDates
+    bookedDates = [...new Set(bookedDates)];
 
     res.status(200).json({
       status: "success",

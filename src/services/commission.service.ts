@@ -44,6 +44,10 @@ export async function getHostPendingPayouts(hostId: string) {
     where: {
       hostId,
       status: "pending",
+      booking: {
+        paymentStatus: "paid",
+        status: { in: ["confirmed", "completed"] },
+      },
     },
   });
 
@@ -77,12 +81,21 @@ export async function processPayout(
   }
 
   // Get all pending commissions for these bookings
+  const whereClause: any = {
+    hostId,
+    status: "pending",
+    booking: {
+      paymentStatus: "paid",
+      status: { in: ["confirmed", "completed"] },
+    }
+  };
+
+  if (bookingIds && bookingIds.length > 0) {
+    whereClause.bookingId = { in: bookingIds };
+  }
+
   const commissions = await prisma.commission.findMany({
-    where: {
-      hostId,
-      bookingId: { in: bookingIds },
-      status: "pending",
-    },
+    where: whereClause,
   });
 
   if (commissions.length === 0) {
@@ -124,11 +137,14 @@ export async function processPayout(
     },
   });
 
+  // Get the actual booking IDs from the fetched commissions
+  const actualBookingIds = commissions.map(c => c.bookingId);
+
   // Update commissions
   await prisma.commission.updateMany({
     where: {
       hostId,
-      bookingId: { in: bookingIds },
+      bookingId: { in: actualBookingIds },
       status: "pending",
     },
     data: {
@@ -139,12 +155,12 @@ export async function processPayout(
 
   // Update bookings
   await prisma.booking.updateMany({
-    where: { id: { in: bookingIds } },
+    where: { id: { in: actualBookingIds } },
     data: {
       payoutStatus: "processed",
       payoutId: payout.id,
       payoutDate: new Date(),
-    },
+    }
   });
 
   // Send notification to host
@@ -269,7 +285,12 @@ export async function getCommissionSummary(params: {
   startDate?: Date;
   endDate?: Date;
 }) {
-  const where: Record<string, unknown> = {};
+  const where: Record<string, unknown> = {
+    booking: {
+      paymentStatus: "paid",
+      status: { in: ["confirmed", "completed"] },
+    }
+  };
   if (params.startDate || params.endDate) {
     where.createdAt = {};
     if (params.startDate) (where.createdAt as any).gte = params.startDate;
@@ -333,7 +354,13 @@ export async function getHostLedger(
   const limit = Math.min(params.limit || 50, 200);
   const skip = (page - 1) * limit;
 
-  const where: Record<string, unknown> = { hostId };
+  const where: Record<string, unknown> = { 
+    hostId,
+    booking: {
+      paymentStatus: "paid",
+      status: { in: ["confirmed", "completed"] },
+    }
+  };
   if (params.startDate || params.endDate) {
     where.createdAt = {};
     if (params.startDate) (where.createdAt as any).gte = params.startDate;
@@ -361,14 +388,27 @@ export async function getHostLedger(
     }),
     prisma.commission.count({ where }),
     prisma.commission.aggregate({
-      where: { hostId },
+      where: {
+        hostId,
+        booking: {
+          paymentStatus: "paid",
+          status: { in: ["confirmed", "completed"] },
+        },
+      },
       _sum: {
         commissionAmount: true,
         hostPayoutAmount: true,
       },
     }),
     prisma.commission.aggregate({
-      where: { hostId, status: "pending" },
+      where: {
+        hostId,
+        status: "pending",
+        booking: {
+          paymentStatus: "paid",
+          status: { in: ["confirmed", "completed"] },
+        },
+      },
       _sum: {
         hostPayoutAmount: true,
       },

@@ -4,7 +4,7 @@ import { prisma } from "../config/db.js";
 
 interface DecodedToken {
   id: string;
-  email: string;
+  email: string | null;
   role: string;
 }
 
@@ -80,4 +80,18 @@ export const restrictTo = (...roles: string[]) => {
     }
     next();
   };
+};
+
+// @desc    Ensure vendor is fully approved
+export const isVendorApproved = (req: any, res: Response, next: NextFunction): void => {
+  const isVendor = req.user?.role === "Vendor" || req.user?.role === "Dual Mode";
+  if (!req.user || !isVendor) {
+    res.status(403).json({ status: "fail", message: "Access denied. Only vendors can perform this action." });
+    return;
+  }
+  if (req.user.kycStatus !== "Approved") {
+    res.status(403).json({ status: "fail", message: "Your vendor account is pending approval." });
+    return;
+  }
+  next();
 };

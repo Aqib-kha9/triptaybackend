@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import * as paymentService from "../services/payment.service.js";
+import { sendBookingNotifications } from "../services/booking.service.js";
 import { prisma } from "../config/db.js";
 import { UnauthorizedError } from "../core/errors.js";
 import { logger } from "../core/logger.js";
@@ -103,6 +104,35 @@ export const verifyPayuPayment = async (req: any, res: Response, next: NextFunct
     res.status(200).json({
       status: "success",
       message: "Payment verified successfully.",
+      data: {
+        booking,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Process wallet payment
+// @route   POST /api/payments/wallet/pay
+// @access  Private
+export const payWithWallet = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { bookingId } = req.body;
+    
+    // Call the payment service inside a transaction
+    const booking = await paymentService.payWithWallet(bookingId, req.user.id);
+    
+    // Send notifications outside the transaction to prevent blocking
+    if (booking.status === "confirmed") {
+      sendBookingNotifications(booking.id, "confirmed").catch(e => {
+        logger.error(`Failed to send booking confirmed notification for ${booking.id}: ${e}`);
+      });
+    }
+
+    res.status(200).json({
+      status: "success",
+      message: "Payment processed successfully from Wallet.",
       data: {
         booking,
       },

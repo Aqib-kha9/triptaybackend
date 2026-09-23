@@ -3,7 +3,7 @@ import { config } from "../core/config.js";
 
 export interface JwtPayload {
   id: string;
-  email: string;
+  email: string | null;
   role: string;
 }
 

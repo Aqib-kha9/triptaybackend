@@ -195,7 +195,7 @@ export const emailTemplates: Record<string, (data: Record<string, unknown>) => E
 
 // ─── Send Email via SES ───
 export async function sendEmail(
-  to: string,
+  to: string | null,
   subject: string,
   html: string,
   text?: string,
@@ -204,6 +204,8 @@ export async function sendEmail(
   try {
     const settings = await getEmailSettings();
     const client = await getSesClient();
+
+    if (!to) return null;
 
     const params: SendEmailCommandInput = {
       Source: `${settings.fromName} <${settings.fromEmail}>`,
@@ -227,7 +229,7 @@ export async function sendEmail(
     // Log the email
     await prisma.emailLog.create({
       data: {
-        to,
+        to: to as string,
         from: settings.fromEmail,
         subject,
         body: html,
@@ -247,7 +249,7 @@ export async function sendEmail(
       const settings = await getEmailSettings();
       await prisma.emailLog.create({
         data: {
-          to,
+          to: to as string,
           from: settings.fromEmail,
           subject,
           body: html,
@@ -266,13 +268,18 @@ export async function sendEmail(
 
 // ─── Send templated email ───
 export async function sendTemplatedEmail(
-  to: string,
+  to: string | null,
   templateName: string,
   data: Record<string, unknown>,
 ): Promise<string | null> {
   const templateFn = emailTemplates[templateName];
   if (!templateFn) {
     logger.error(`Email template "${templateName}" not found.`);
+    return null;
+  }
+  
+  if (!to) {
+    logger.info(`Skipping email template "${templateName}" because recipient address is missing.`);
     return null;
   }
 

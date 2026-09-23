@@ -10,7 +10,7 @@ generator client {
 model User {
   id                   String   @id @default(cuid())
   name                 String
-  email                String   @unique
+  email                String?  @unique
   password             String
   phone                String?  @unique
   avatar               String?
@@ -323,6 +323,7 @@ model Booking {
   itemName          String
   itemSlug          String
   itemImage         String?
+  roomSelections    Json?     // Used for room-based listings: [{ roomId, quantity, pricePerNight }]
   // Stay-specific
   checkIn           DateTime?
   checkOut          DateTime?
@@ -724,4 +725,16 @@ model WalletTransaction {
   user        User     @relation(fields: [userId], references: [id])
 
   @@index([userId])
+}
+
+model SupportTicket {
+  id        String   @id @default(cuid())
+  userId    String?
+  name      String
+  email     String
+  subject   String
+  message   String   @db.Text
+  status    String   @default("Open") // Open, In Progress, Resolved
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

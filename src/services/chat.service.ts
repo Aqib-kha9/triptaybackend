@@ -7,7 +7,7 @@ import { logger } from "../core/logger.js";
 export interface ChatParticipant {
   _id: string;
   name: string;
-  email: string;
+  email: string | null;
   avatar?: string | null;
 }
 

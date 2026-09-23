@@ -11,6 +11,7 @@ export interface SearchQuery {
   minPrice?: string;
   maxPrice?: string;
   guests?: string;
+  rooms?: string;
   sort?: string; // relevance | price_asc | price_desc | rating
   page?: string;
   limit?: string;
@@ -122,11 +123,36 @@ export async function searchAll(query: SearchQuery) {
         paramIdx++;
       }
 
-      if (query.guests) {
-        listingConditions.push(`l.\"maxGuests\" >= $${paramIdx}::int`);
-        activityConditions.push(`a.\"maxGroupSize\" >= $${paramIdx}::int`);
-        params.push(parseInt(query.guests, 10));
-        paramIdx++;
+      if (query.guests || query.rooms) {
+        const guestsInt = parseInt(query.guests || "1", 10);
+        const roomsInt = parseInt(query.rooms || "1", 10);
+        
+        listingConditions.push(`
+          (
+            (l."isEntirePlace" = true AND COALESCE(l.bedrooms, 0) >= $${paramIdx}::int AND l."maxGuests" >= $${paramIdx + 1}::int)
+            OR
+            (
+              l."isEntirePlace" = false 
+              AND (SELECT COALESCE(SUM(inventory), 0) FROM "Room" WHERE "listingId" = l.id AND "isActive" = true) >= $${paramIdx}::int
+              AND (
+                SELECT COALESCE(SUM("maxGuests"), 0) 
+                FROM (
+                  SELECT r."maxGuests" 
+                  FROM "Room" r 
+                  CROSS JOIN generate_series(1, r.inventory) 
+                  WHERE r."listingId" = l.id AND r."isActive" = true 
+                  ORDER BY r."maxGuests" DESC 
+                  LIMIT $${paramIdx}::int
+                ) top_rooms
+              ) >= $${paramIdx + 1}::int
+            )
+          )
+        `);
+        activityConditions.push(`a."maxGroupSize" >= $${paramIdx + 1}::int`);
+        
+        params.push(roomsInt);
+        params.push(guestsInt);
+        paramIdx += 2;
       }
 
       const listingWhere = listingConditions.join(" AND ");

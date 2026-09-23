@@ -1,7 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import type { Request, Response, NextFunction } from "express";
-import { protect, restrictTo } from "../middlewares/authMiddleware.js";
+import { protect, restrictTo, isVendorApproved } from "../middlewares/authMiddleware.js";
 import {
   createListing,
   getMyListings,
@@ -21,7 +21,7 @@ const router = Router();
 router.use(protect as any);
 
 // ── Vendor / Dual Mode: CRUD ──
-router.post("/", restrictTo("Vendor", "Dual Mode") as any, validate(schemas.listing.create), createListing as any);
+router.post("/", isVendorApproved as any, validate(schemas.listing.create), createListing as any);
 router.get("/", getMyListings as any);
 router.get("/:id", getListing as any);
 router.put("/:id", validate(schemas.listing.update), updateListing as any);

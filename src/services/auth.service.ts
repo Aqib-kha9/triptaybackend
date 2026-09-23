@@ -12,7 +12,7 @@ import { createAuditLog } from "./audit.service.js";
 interface SanitizedUser {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
   phone: string | null;
   avatar: string | null;
   website: string | null;
@@ -37,7 +37,7 @@ export function sanitizeUser(raw: any): SanitizedUser {
   return {
     id: raw.id,
     name: raw.name,
-    email: raw.email,
+    email: raw.email ?? null,
     phone: raw.phone ?? null,
     avatar: raw.avatar ?? null,
     website: raw.website ?? null,
@@ -60,7 +60,7 @@ export function sanitizeUser(raw: any): SanitizedUser {
 }
 
 
-export function normalizeIdentifier(identifier: string): { email: string; phone: string | null } {
+export function normalizeIdentifier(identifier: string): { email: string | null; phone: string | null } {
   const clean = identifier.trim().toLowerCase();
   const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean);
   if (isEmail) {
@@ -77,12 +77,7 @@ export function normalizeIdentifier(identifier: string): { email: string; phone:
   }
   
   if (/^\+?\d{10,15}$/.test(finalPhone)) {
-    // Strip '+' for the synthetic email to be consistent across systems
-    const emailDigits = finalPhone.replace("+", "");
-    return {
-      email: `${emailDigits}@triptay.com`,
-      phone: finalPhone
-    };
+    return { email: null, phone: finalPhone };
   }
   return { email: clean, phone: null };
 }
@@ -96,9 +91,17 @@ export async function signup(data: {
   role?: string;
 }) {
   const { email: normalizedEmail, phone: detectedPhone } = normalizeIdentifier(data.email);
-  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  if (existing) {
-    throw new ConflictError("A user with this email already exists.");
+  if (normalizedEmail) {
+    const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existing) {
+      throw new ConflictError("A user with this email already exists.");
+    }
+  }
+  if (detectedPhone) {
+    const existing = await prisma.user.findUnique({ where: { phone: detectedPhone } });
+    if (existing) {
+      throw new ConflictError("A user with this phone number already exists.");
+    }
   }
 
   const hashed = await bcrypt.hash(data.password, 12);
@@ -120,9 +123,9 @@ export async function signup(data: {
 
 // ─── Login ───
 export async function login(email: string, password: string, ip?: string) {
-  const { email: normalizedEmail } = normalizeIdentifier(email);
+  const { email: normalizedEmail, phone } = normalizeIdentifier(email);
   // Hardcoded admin check (preserved from original)
-  if (normalizedEmail === config.admin.email && password === config.admin.password) {
+  if (normalizedEmail && normalizedEmail === config.admin.email && password === config.admin.password) {
     let admin = await prisma.user.findFirst({
       where: { email: config.admin.email, role: "Admin" },
     });
@@ -142,7 +145,13 @@ export async function login(email: string, password: string, ip?: string) {
     return { user: sanitizeUser(admin), token };
   }
 
-  const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  let user = null;
+  if (normalizedEmail) {
+    user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  } else if (phone) {
+    user = await prisma.user.findUnique({ where: { phone } });
+  }
+  
   if (!user) {
     throw new UnauthorizedError("Invalid email or password.");
   }
@@ -175,7 +184,7 @@ export async function login(email: string, password: string, ip?: string) {
 
       await createAuditLog({
         actorId: user.id,
-        actorEmail: user.email,
+        actorEmail: user.email || undefined,
         action: "ACCOUNT_LOCKED",
         category: "auth",
         resource: "User",
@@ -220,7 +229,7 @@ export async function login(email: string, password: string, ip?: string) {
 
   await createAuditLog({
     actorId: user.id,
-    actorEmail: user.email,
+    actorEmail: user.email || undefined,
     actorRole: user.role,
     action: "USER_LOGIN",
     category: "auth",
@@ -317,6 +326,23 @@ export async function changePassword(
   return { message: "Password changed successfully." };
 }
 
+// ─── Change Password Bypass Current (for OTP reset inside profile) ───
+export async function changePasswordBypassCurrent(
+  userId: string,
+  newPassword: string,
+) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new NotFoundError("User not found.");
+
+  const hashed = await bcrypt.hash(newPassword, 12);
+  await prisma.user.update({
+    where: { id: userId },
+    data: { password: hashed },
+  });
+
+  return { message: "Password changed successfully." };
+}
+
 // ─── Forgot Password (generate reset token + send email link) ───
 export async function forgotPassword(email: string, ip?: string) {
   const user = await prisma.user.findUnique({ where: { email } });
@@ -345,7 +371,7 @@ export async function forgotPassword(email: string, ip?: string) {
   await prisma.passwordReset.create({
     data: {
       userId: user.id,
-      email: user.email,
+      email: user.email || "",
       token: hashedToken,
       expiresAt,
       ip: ip || null,
@@ -363,7 +389,7 @@ export async function forgotPassword(email: string, ip?: string) {
 
   await createAuditLog({
     actorId: user.id,
-    actorEmail: user.email,
+    actorEmail: user.email || undefined,
     action: "PASSWORD_RESET_REQUESTED",
     category: "auth",
     resource: "User",
@@ -422,7 +448,7 @@ export async function resetPassword(token: string, newPassword: string, ip?: str
 
   await createAuditLog({
     actorId: user.id,
-    actorEmail: user.email,
+    actorEmail: user.email || undefined,
     action: "PASSWORD_RESET_COMPLETED",
     category: "auth",
     resource: "User",
@@ -436,37 +462,39 @@ export async function resetPassword(token: string, newPassword: string, ip?: str
 
 // ─── OTP (bcrypt-hashed codes) ───
 export async function sendOtp(email: string, purpose: string = "login") {
-  const { email: normalizedEmail } = normalizeIdentifier(email);
+  const { email: normalizedEmail, phone } = normalizeIdentifier(email);
+  const identifierKey = normalizedEmail || phone || "";
+  
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const hashedCode = await bcrypt.hash(code, 10);
   const expiresAt = new Date(Date.now() + config.security.otpExpiryMinutes * 60 * 1000);
 
   // Remove any existing OTP for this identifier+purpose, then store the hashed code
-  await prisma.otp.deleteMany({ where: { identifier: normalizedEmail, purpose } });
+  await prisma.otp.deleteMany({ where: { identifier: identifierKey, purpose } });
   await prisma.otp.create({
-    data: { identifier: normalizedEmail, code: hashedCode, purpose, expiresAt },
+    data: { identifier: identifierKey, code: hashedCode, purpose, expiresAt },
   });
 
   // Send the plaintext code via email (best-effort, non-blocking on failure)
-  // Skip sending actual emails for virtual triptay placeholder emails
-  if (!normalizedEmail.endsWith("@triptay.com")) {
+  if (normalizedEmail) {
     await sendTemplatedEmail(normalizedEmail, "otp", { code, purpose }).catch((err) => {
       logger.error(`Failed to send OTP email to ${normalizedEmail}:`, err);
     });
+    logger.info(`OTP sent to ${normalizedEmail} (purpose: ${purpose})`);
   } else {
-    logger.info(`OTP generated for mobile user: ${normalizedEmail}`);
+    logger.info(`OTP generated for mobile user: ${phone} (purpose: ${purpose})`);
   }
 
-  logger.info(`OTP sent to ${normalizedEmail} (purpose: ${purpose})`);
-
-  return { message: `OTP sent to ${normalizedEmail}.`, code };
+  return { message: `OTP sent to ${identifierKey}.`, code };
 }
 
 export async function verifyOtp(email: string, code: string, purpose: string = "login") {
-  const { email: normalizedEmail } = normalizeIdentifier(email);
+  const { email: normalizedEmail, phone } = normalizeIdentifier(email);
+  const identifierKey = normalizedEmail || phone || "";
+  
   // Fetch all active OTPs for this identifier+purpose (hashes can't be queried directly)
   const otps = await prisma.otp.findMany({
-    where: { identifier: normalizedEmail, purpose },
+    where: { identifier: identifierKey, purpose },
     orderBy: { createdAt: "desc" },
   });
 
@@ -496,19 +524,23 @@ export async function verifyOtp(email: string, code: string, purpose: string = "
     });
 
     if (latestOtp.attempts + 1 >= config.security.otpMaxAttempts) {
-      await prisma.otp.deleteMany({ where: { identifier: normalizedEmail, purpose } });
+      await prisma.otp.deleteMany({ where: { identifier: identifierKey, purpose } });
       throw new TooManyRequestsError("Too many incorrect OTP attempts. Please request a new OTP.");
     }
 
     throw new BadRequestError("Invalid or expired OTP.");
   }
 
-  // Check if user exists
-  const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  let user = null;
+  if (normalizedEmail) {
+    user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+  } else if (phone) {
+    user = await prisma.user.findUnique({ where: { phone } });
+  }
   const exists = !!user;
 
   // Clean up used OTP
-  await prisma.otp.deleteMany({ where: { identifier: normalizedEmail, purpose } });
+  await prisma.otp.deleteMany({ where: { identifier: identifierKey, purpose } });
 
   return {
     message: "OTP verified successfully.",
@@ -530,10 +562,17 @@ export async function registerOtp(data: {
   // Verify OTP first
   await verifyOtp(data.email, data.code);
 
-  // Check if user already exists
-  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  if (existing) {
-    throw new ConflictError("User with this email already exists.");
+  if (normalizedEmail) {
+    const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existing) {
+      throw new ConflictError("User with this email already exists.");
+    }
+  }
+  if (detectedPhone) {
+    const existing = await prisma.user.findUnique({ where: { phone: detectedPhone } });
+    if (existing) {
+      throw new ConflictError("User with this phone number already exists.");
+    }
   }
 
   const hashed = await bcrypt.hash(data.password, 12);
@@ -559,9 +598,17 @@ export async function registerOtpDirect(data: {
   role?: string;
 }) {
   const { email: normalizedEmail, phone: detectedPhone } = normalizeIdentifier(data.email);
-  const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
-  if (existing) {
-    throw new ConflictError("User with this email already exists.");
+  if (normalizedEmail) {
+    const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (existing) {
+      throw new ConflictError("User with this email already exists.");
+    }
+  }
+  if (detectedPhone) {
+    const existing = await prisma.user.findUnique({ where: { phone: detectedPhone } });
+    if (existing) {
+      throw new ConflictError("User with this phone number already exists.");
+    }
   }
 
   // Generate a secure random password since no password is provided via OTP direct

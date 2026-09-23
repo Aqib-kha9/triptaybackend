@@ -12,6 +12,7 @@ import {
   processRefund,
   razorpayWebhook,
   payuWebhook,
+  payWithWallet,
 } from "../controllers/paymentController.js";
 
 const router = Router();
@@ -32,6 +33,9 @@ router.post("/razorpay/verify", validate(schemas.payment.verifyRazorpayPayment),
 // ── PayU ──
 router.post("/payu/order", validate(schemas.payment.createPayuOrder), createPayuOrder as any);
 router.post("/payu/verify", validate(schemas.payment.verifyPayuPayment), verifyPayuPayment as any);
+
+// ── Wallet Payment ──
+router.post("/wallet/pay", protect as any, payWithWallet as any);
 
 // ── Get payment details for a booking ──
 router.get("/:bookingId", getPayment as any);

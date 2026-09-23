@@ -6,7 +6,7 @@ import * as searchService from "../services/search.service.js";
 // @access  Public
 export const search = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const { q, type, city, state, minPrice, maxPrice, guests, sort, page, limit } = req.query;
+    const { q, type, city, state, minPrice, maxPrice, guests, rooms, sort, page, limit } = req.query;
 
     const result = await searchService.searchAll({
       q: q as string,
@@ -16,6 +16,7 @@ export const search = async (req: Request, res: Response, next: NextFunction): P
       minPrice: minPrice as string | undefined,
       maxPrice: maxPrice as string | undefined,
       guests: guests as string | undefined,
+      rooms: rooms as string | undefined,
       sort: sort as string | undefined,
       page: page as string | undefined,
       limit: limit as string | undefined,

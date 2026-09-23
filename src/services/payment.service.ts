@@ -13,6 +13,7 @@ import { sendTemplatedEmail } from "./email.service.js";
 import { sendPushToUser } from "./push.service.js";
 import { getGatewaySettings } from "./configuration.service.js";
 import { emitToUser } from "../socket/emitter.js";
+import { sendBookingNotifications } from "./booking.service.js";
 
 // ─── Initialize payment gateways (DB-backed with env fallback) ───
 // Instances are cached but keyed by credentials so that admin changes take effect
@@ -233,25 +234,8 @@ export async function verifyRazorpayPayment(
     },
   });
 
-  // Send confirmation notifications
-  if (booking.guestEmail) {
-    await sendTemplatedEmail(booking.guestEmail, "bookingConfirmation", {
-      guestName: booking.guestName,
-      itemName: booking.itemName,
-      bookingRef: booking.bookingRef,
-      checkIn: booking.checkIn?.toLocaleDateString(),
-      checkOut: booking.checkOut?.toLocaleDateString(),
-      guests: booking.guests,
-      totalAmount: booking.totalAmount,
-    });
-  }
-
-  // Notify host
-  await sendPushToUser(booking.hostId, {
-    title: "Payment Received!",
-    body: `Payment of ₹${booking.totalAmount} received for ${booking.itemName}`,
-    data: { bookingId, type: "payment" },
-  });
+  // Send confirmation notifications (Guest Email, Host Email, Push)
+  await sendBookingNotifications(booking.id, "paid");
 
   await createAuditLog({
     actorId: userId,
@@ -334,6 +318,9 @@ export async function handleRazorpayWebhook(body: any, signature: string): Promi
         resourceId: bookingId,
         details: { bookingRef: booking.bookingRef, gateway: "razorpay", status: "success", amount: paymentEntity.amount / 100 },
       });
+
+      // Send confirmation notifications
+      await sendBookingNotifications(bookingId, "paid");
 
       // Emit real-time status update to Guest and Host
       emitToUser(booking.userId, "booking:status_update", {
@@ -635,6 +622,95 @@ export async function createPayuOrder(
   };
 }
 
+// ─── Wallet Payment ───
+export async function payWithWallet(bookingId: string, userId: string) {
+  return await prisma.$transaction(async (tx: any) => {
+    // 1. Fetch booking with pessimistic lock
+    const booking = await tx.booking.findUnique({
+      where: { id: bookingId },
+    });
+
+    if (!booking) {
+      throw new NotFoundError("Booking not found.");
+    }
+    if (booking.userId !== userId) {
+      throw new UnauthorizedError("You can only pay for your own bookings.");
+    }
+    if (booking.paymentStatus === "paid") {
+      throw new BadRequestError("Booking is already paid.");
+    }
+    if (booking.status === "expired" || booking.status === "cancelled") {
+      throw new BadRequestError(`Cannot pay for a booking that is ${booking.status}.`);
+    }
+
+    const amountToDeduct = booking.totalAmount;
+
+    // 2. Check user wallet balance
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { walletBalance: true },
+    });
+
+    if (!user) throw new NotFoundError("User not found.");
+    if (user.walletBalance < amountToDeduct) {
+      throw new BadRequestError("Insufficient wallet balance.");
+    }
+
+    // 3. Deduct from user wallet
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        walletBalance: {
+          decrement: amountToDeduct,
+        },
+      },
+    });
+
+    // 4. Record wallet transaction
+    await tx.walletTransaction.create({
+      data: {
+        userId,
+        amount: amountToDeduct,
+        type: "debit",
+        title: "Booking Payment",
+        description: `Payment for ${booking.itemName}`,
+        status: "Success",
+        referenceId: booking.bookingRef,
+      },
+    });
+
+    // 5. Update booking status
+    const isInstant = booking.bookingType === "instant";
+    const updatedBooking = await tx.booking.update({
+      where: { id: bookingId },
+      data: {
+        paymentStatus: "paid",
+        status: isInstant ? "confirmed" : "pending",
+        paidAt: new Date(),
+        confirmedAt: isInstant ? new Date() : null,
+        paymentGateway: "wallet",
+      },
+    });
+
+    // 6. Record Payment entry
+    await tx.payment.create({
+      data: {
+        bookingId: booking.id,
+        userId: userId,
+        amount: amountToDeduct,
+        currency: "INR",
+        gateway: "wallet",
+        status: "success",
+      },
+    });
+    
+    // We do not send emails inside the transaction to avoid blocking it or failing it if email service is down.
+    // However, since it's a service method, the controller should handle the notifications or we can do it after the transaction.
+    
+    return updatedBooking;
+  });
+}
+
 // ─── Verify PayU payment (server-side) ───
 export async function verifyPayuPayment(
   bookingId: string,
@@ -865,24 +941,7 @@ export async function verifyPayuPayment(
   });
 
   // Send confirmation notifications
-  if (booking.guestEmail) {
-    await sendTemplatedEmail(booking.guestEmail, "bookingConfirmation", {
-      guestName: booking.guestName,
-      itemName: booking.itemName,
-      bookingRef: booking.bookingRef,
-      checkIn: booking.checkIn?.toLocaleDateString(),
-      checkOut: booking.checkOut?.toLocaleDateString(),
-      guests: booking.guests,
-      totalAmount: booking.totalAmount,
-    });
-  }
-
-  // Notify host
-  await sendPushToUser(booking.hostId, {
-    title: "Payment Received!",
-    body: `Payment of ₹${booking.totalAmount} received for ${booking.itemName}`,
-    data: { bookingId, type: "payment" },
-  });
+  await sendBookingNotifications(booking.id, "paid");
 
   await createAuditLog({
     actorId: userId,
@@ -1015,6 +1074,9 @@ export async function handlePayuWebhook(body: any): Promise<void> {
       resourceId: bookingId,
       details: { bookingRef: booking.bookingRef, gateway: "payu", status: "success", amount: booking.totalAmount, mihpayid, txnid },
     });
+
+    // Send confirmation notifications
+    await sendBookingNotifications(bookingId, "paid");
 
     logger.info(`PayU webhook: payment captured for booking ${booking.bookingRef}`);
 
@@ -1167,6 +1229,15 @@ export async function processRefund(
     }
   } else if (booking.paymentGateway === "payu" && booking.gatewayPaymentId) {
     refundId = await processPayuRefund(booking.gatewayPaymentId, amount);
+  } else if (booking.paymentGateway === "wallet") {
+    const { walletService } = await import("./wallet.service.js");
+    await walletService.addMoney(
+      booking.userId,
+      amount,
+      "Booking Refund",
+      `Refund for cancelled booking ${booking.bookingRef}`
+    );
+    refundId = `REF_WALLET_${Date.now()}`;
   }
 
   // Update payment record(s) linked to this booking payment ID

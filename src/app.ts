@@ -18,14 +18,15 @@ import availabilityRoutes from "./routes/availabilityRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import wishlistRoutes from "./routes/wishlistRoutes.js";
+import communicationRoutes from "./routes/communicationRoutes.js";
+import disputeRoutes from "./routes/disputeRoutes.js";
 import destinationRoutes from "./routes/destinationRoutes.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import couponRoutes from "./routes/couponRoutes.js";
 import commissionRoutes from "./routes/commissionRoutes.js";
-import communicationRoutes from "./routes/communicationRoutes.js";
-import disputeRoutes from "./routes/disputeRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
+import supportRoutes from "./routes/supportRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
 import walletRoutes from "./routes/walletRoutes.js";
 
@@ -226,6 +227,9 @@ app.use("/api/reviews", reviewRoutes);
 
 // Offers route (public read + protected write)
 app.use("/api/offers", offerRoutes);
+
+// Support routes (public write + admin read/write)
+app.use("/api/support", supportRoutes);
 
 // Health check endpoint
 app.get("/api/health", (_req: Request, res: Response) => {

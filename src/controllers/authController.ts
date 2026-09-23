@@ -457,3 +457,110 @@ export const resetPassword = async (req: Request, res: Response, next: NextFunct
     next(error);
   }
 };
+
+// @desc    Send OTP to update phone number
+// @route   POST /api/auth/send-phone-update-otp
+// @access  Private
+export const sendPhoneUpdateOtp = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      res.status(400).json({ status: "fail", message: "Please supply a phone number." });
+      return;
+    }
+
+    const cleanPhone = phone.trim().toLowerCase();
+    const result = await authService.sendOtp(cleanPhone, "update-phone");
+
+    const isProduction = process.env.NODE_ENV === "production";
+    res.status(200).json({
+      status: "success",
+      message: result.message,
+      ...(isProduction ? {} : { devCode: result.code }),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Verify OTP and update phone number
+// @route   POST /api/auth/verify-phone-update-otp
+// @access  Private
+export const verifyPhoneUpdateOtp = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { phone, code } = req.body;
+    if (!phone || !code) {
+      res.status(400).json({ status: "fail", message: "Please supply phone number and OTP code." });
+      return;
+    }
+
+    const cleanPhone = phone.trim().toLowerCase();
+    
+    // We'll use verifyOtp but ignore the returned token since we don't need a new session
+    await authService.verifyOtp(cleanPhone, code, "update-phone");
+
+    // Update the phone number
+    const user = await authService.updateProfile(req.user.id, { phone: cleanPhone });
+
+    res.status(200).json({
+      status: "success",
+      message: "Phone number updated successfully.",
+      data: {
+        user: { id: user.id, phone: user.phone },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Send OTP to reset password (while logged in)
+// @route   POST /api/auth/send-password-reset-otp
+// @access  Private
+export const sendPasswordResetOtp = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const identifier = req.user.phone || req.user.email;
+    if (!identifier) {
+      res.status(400).json({ status: "fail", message: "No phone or email attached to this account." });
+      return;
+    }
+
+    const result = await authService.sendOtp(identifier, "reset-password");
+
+    const isProduction = process.env.NODE_ENV === "production";
+    res.status(200).json({
+      status: "success",
+      message: result.message,
+      ...(isProduction ? {} : { devCode: result.code }),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Verify OTP and set new password
+// @route   POST /api/auth/verify-password-reset-otp
+// @access  Private
+export const verifyPasswordResetOtp = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { code, newPassword } = req.body;
+    if (!code || !newPassword) {
+      res.status(400).json({ status: "fail", message: "Please supply OTP code and new password." });
+      return;
+    }
+
+    const identifier = req.user.phone || req.user.email;
+    
+    await authService.verifyOtp(identifier, code, "reset-password");
+
+    // Update password
+    await authService.changePasswordBypassCurrent(req.user.id, newPassword);
+
+    res.status(200).json({
+      status: "success",
+      message: "Password changed successfully.",
+    });
+  } catch (error) {
+    next(error);
+  }
+};

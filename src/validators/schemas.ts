@@ -156,10 +156,12 @@ export const createListingSchema = z.object({
     lng: z.number().min(-180).max(180),
   }).optional(),
   landmark: z.string().optional(),
-  maxGuests: z.number().int().min(1),
-  bedrooms: z.number().int().min(0),
-  beds: z.number().int().min(0),
-  bathrooms: z.number().int().min(0),
+  // For room-based (isEntirePlace=false), these are auto-calculated by the service from rooms[]
+  // Frontend omits them; backend fills them in. Schema accepts optional to support both flows.
+  maxGuests: z.number().int().min(1).optional().default(1),
+  bedrooms: z.number().int().min(0).optional().default(0),
+  beds: z.number().int().min(0).optional().default(0),
+  bathrooms: z.number().int().min(0).optional().default(0),
   extraMattresses: z.number().int().optional().default(0),
   basePrice: z.number().min(0),
   weekendPrice: z.number().min(0).optional(),
@@ -209,8 +211,18 @@ export const createListingSchema = z.object({
   videoTourUrl: z.string().url().optional().or(z.literal("")),
   instantBook: z.boolean().optional().default(true),
   advanceNoticeHours: z.number().int().optional().default(0),
-  maxGuestsPerBooking: z.number().int().optional(),
+  maxGuestsPerBooking: z.number().int().nullable().optional(),
   languagesSpoken: z.array(z.string()).optional().default([]),
+  rooms: z.array(z.object({
+    name: z.string().min(1),
+    description: z.string().min(1),
+    maxGuests: z.number().int().min(1),
+    basePrice: z.number().min(0),
+    inventory: z.number().int().min(1),
+    beds: z.number().int().min(0),
+    bathrooms: z.number().int().min(0),
+    amenities: z.array(z.string()).optional().default([]),
+  })).optional(),
 });
 
 export const updateListingSchema = createListingSchema.partial();
@@ -364,6 +376,7 @@ export const createBookingSchema = z.object({
   specialRequests: z.string().max(1000).optional(),
   couponCode: z.string().max(50).optional(),
   bookingType: BookingTypeEnum.optional().default("instant"),
+  roomSelections: z.record(z.number().int().min(0)).optional(),
 }).refine(
   (data) => {
     if (data.itemType === "listing") {
@@ -392,6 +405,7 @@ export const bookingPreviewSchema = z.object({
   checkOut: z.string().datetime().optional(),
   guests: z.number().int().min(1, "At least 1 guest required"),
   couponCode: z.string().max(50).optional(),
+  roomSelections: z.record(z.number().int().min(0)).optional(),
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -499,7 +513,7 @@ export const validateCouponSchema = z.object({
 // ─────────────────────────────────────────────────────────────
 export const processPayoutSchema = z.object({
   hostId: z.string().min(1, "Host ID is required"),
-  bookingIds: z.array(z.string().min(1)).min(1, "At least one booking ID is required"),
+  bookingIds: z.array(z.string()).optional(),
 });
 
 // ─────────────────────────────────────────────────────────────

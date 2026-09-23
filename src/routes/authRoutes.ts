@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { signup, login, logout, getMe, getProfile, updateProfile, changePassword, sendOtp, verifyOtp, registerOtp, submitKyc, googleLogin, forgotPassword, resetPassword } from "../controllers/authController.js";
+import { signup, login, logout, getMe, getProfile, updateProfile, changePassword, sendOtp, verifyOtp, registerOtp, submitKyc, googleLogin, forgotPassword, resetPassword, sendPhoneUpdateOtp, verifyPhoneUpdateOtp, sendPasswordResetOtp, verifyPasswordResetOtp } from "../controllers/authController.js";
 import { protect } from "../middlewares/authMiddleware.js";
 import { validate } from "../validators/middleware.js";
 import { schemas } from "../validators/schemas.js";
@@ -24,9 +24,15 @@ router.post("/google-login", validate(schemas.auth.googleLogin), googleLogin);
 // Protected Authentication endpoints
 router.get("/me", protect, getMe);
 
-// Profile management (Protected)
-router.get("/profile", protect, getProfile);
-router.patch("/profile", protect, validate(schemas.auth.updateProfile), updateProfile);
+// Profile management (protected)
+router.get("/profile", protect as any, getProfile as any);
+router.patch("/profile", protect as any, validate(schemas.auth.updateProfile), updateProfile as any);
+router.post("/send-phone-update-otp", protect as any, sendPhoneUpdateOtp as any);
+router.post("/verify-phone-update-otp", protect as any, verifyPhoneUpdateOtp as any);
+router.post("/send-password-reset-otp", protect as any, sendPasswordResetOtp as any);
+router.post("/verify-password-reset-otp", protect as any, verifyPasswordResetOtp as any);
+
+// Password management
 router.patch("/change-password", protect, validate(schemas.auth.changePassword), changePassword);
 
 // KYC submission (Protected)

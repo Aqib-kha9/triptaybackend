@@ -110,6 +110,24 @@ async function mapBookingToFrontend(booking: any, currentUserId?: string) {
   const showOtp = currentUserId && booking.userId === currentUserId;
   const filteredOtp = showOtp ? checkInOtp : null;
 
+  // Enrich room selections with room names
+  let roomDetails: Array<{ name: string; qty: number }> = [];
+  if (booking.roomSelections && typeof booking.roomSelections === 'object') {
+    const roomIds = Object.keys(booking.roomSelections);
+    if (roomIds.length > 0) {
+      const rooms = await prisma.room.findMany({
+        where: { id: { in: roomIds } },
+        select: { id: true, name: true }
+      });
+      for (const room of rooms) {
+        roomDetails.push({
+          name: room.name,
+          qty: (booking.roomSelections as Record<string, number>)[room.id] || 0
+        });
+      }
+    }
+  }
+
   return {
     ...booking,
     // Expose the human-readable reference under the field the frontend expects
@@ -119,6 +137,7 @@ async function mapBookingToFrontend(booking: any, currentUserId?: string) {
     // Provide a `location` field for the frontend (derived from itemSlug if needed)
     location: location || booking.location || "",
     checkInOtp: filteredOtp,
+    roomDetails,
   };
 }
 
@@ -400,21 +419,75 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
       }
     }
 
-    // Check max guests (for entire place) or room-based validation
-    if (!item.isEntirePlace && data.roomSelections && Object.keys(data.roomSelections).length > 0) {
-      // Multi-unit: validate each room's inventory
+    // Check max guests / room inventory
+    if (!item.isEntirePlace) {
+      if (!data.roomSelections || Object.keys(data.roomSelections).length === 0) {
+        throw new BadRequestError("Room selections are required for this property.");
+      }
+      
+      // Multi-unit room-based listing: validate real-time inventory per room type
       const rooms: any[] = item.rooms || [];
       const roomMap = new Map(rooms.map((r: any) => [r.id, r]));
+      const now = new Date();
+
+      // Fetch all overlapping bookings that are still active (confirmed or pending within TTL)
+      const overlappingBookings = await prisma.booking.findMany({
+        where: {
+          itemId: data.itemId,
+          itemType: "listing",
+          status: { in: ["pending", "confirmed"] },
+          OR: [
+            { status: "confirmed" },
+            {
+              status: "pending",
+              AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gte: now } }] }],
+            },
+          ],
+          checkIn: { lt: checkOut! },
+          checkOut: { gt: checkIn! },
+        },
+        select: { roomSelections: true },
+      });
+
+      // Aggregate booked quantity per roomId across all overlapping bookings
+      const bookedQtyMap: Record<string, number> = {};
+      for (const b of overlappingBookings) {
+        const selections = b.roomSelections as Record<string, number> | null;
+        if (!selections) continue;
+        for (const [rId, qty] of Object.entries(selections)) {
+          bookedQtyMap[rId] = (bookedQtyMap[rId] || 0) + qty;
+        }
+      }
+
+      // Validate each requested room type against available inventory
       for (const [roomId, qty] of Object.entries(data.roomSelections)) {
         if (qty <= 0) continue;
         const room = roomMap.get(roomId);
         if (!room) throw new BadRequestError(`Room ${roomId} not found in this listing.`);
-        // Check real-time inventory: inventory minus active bookings for these dates
-        // For simplicity, we compare against base inventory. Production should subtract active bookings.
-        if (qty > room.inventory) {
-          throw new ConflictError(`Only ${room.inventory} room(s) of type "${room.name}" are available.`);
+        const alreadyBooked = bookedQtyMap[roomId] || 0;
+        const available = room.inventory - alreadyBooked;
+        if (qty > available) {
+          if (available <= 0) {
+            throw new ConflictError(`"${room.name}" is fully booked for the selected dates.`);
+          }
+          throw new ConflictError(`Only ${available} room(s) of type "${room.name}" are available for the selected dates.`);
         }
       }
+
+      // Validate total guests against combined room capacity
+      let totalCapacity = 0;
+      for (const [roomId, qty] of Object.entries(data.roomSelections)) {
+        if (qty <= 0) continue;
+        const room = roomMap.get(roomId);
+        if (room) {
+          totalCapacity += room.maxGuests * qty;
+        }
+      }
+
+      if (data.guests > totalCapacity) {
+        throw new BadRequestError(`Your selected rooms can only accommodate up to ${totalCapacity} guests. Please select more rooms.`);
+      }
+
     } else if (data.guests > item.maxGuests) {
       throw new BadRequestError(`Maximum ${item.maxGuests} guests allowed.`);
     }
@@ -425,16 +498,21 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
       if (dateStr) datesToCheck.push(dateStr);
     }
 
-    // Check availability
+    // Check availability against manually blocked dates
     const isAvailable = await checkDateAvailability(data.itemId, data.itemType, datesToCheck);
     if (!isAvailable) {
       throw new ConflictError("Some of the selected dates are not available.");
     }
 
-    // Check for conflicting bookings
-    const hasConflict = await checkBookingConflict(data.itemId, data.itemType, checkIn, checkOut);
-    if (hasConflict) {
-      throw new ConflictError("These dates overlap with an existing booking.");
+    // For Entire Place listings only: check if the whole listing is blocked by an existing booking.
+    // For room-based listings (isEntirePlace=false), we already did per-room inventory validation
+    // above — additional conflict check would incorrectly block the listing just because one room
+    // is booked, even if other rooms are still available.
+    if (item.isEntirePlace) {
+      const hasConflict = await checkBookingConflict(data.itemId, data.itemType, checkIn, checkOut);
+      if (hasConflict) {
+        throw new ConflictError("These dates overlap with an existing booking.");
+      }
     }
   } else {
     if (!data.activityDate) {
@@ -465,6 +543,44 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
     if (!isAvailable) {
       throw new ConflictError("This date is not available.");
     }
+
+    // Production Edge Case Fix: Validate Total Slot Capacity to prevent overbooking
+    if (data.startTime) {
+      const now = new Date();
+      // Sum up guests for this specific slot from existing valid bookings
+      const existingBookings = await prisma.booking.findMany({
+        where: {
+          itemId: data.itemId,
+          itemType: "activity",
+          activityDate: {
+            gte: new Date(`${activityDateStr}T00:00:00.000Z`),
+            lte: new Date(`${activityDateStr}T23:59:59.999Z`),
+          },
+          startTime: data.startTime,
+          status: { in: ["pending", "confirmed"] },
+          OR: [
+            { status: "confirmed" },
+            {
+              status: "pending",
+              OR: [{ expiresAt: null }, { expiresAt: { gte: now } }],
+            },
+          ],
+        },
+        select: { guests: true },
+      });
+
+      const currentTotalGuests = existingBookings.reduce((sum, b) => sum + (b.guests || 0), 0);
+      const maxCapacity = item.maxGroupSize || 20;
+
+      if (currentTotalGuests + data.guests > maxCapacity) {
+        const remaining = maxCapacity - currentTotalGuests;
+        if (remaining <= 0) {
+          throw new ConflictError(`The time slot ${data.startTime} is completely full.`);
+        } else {
+          throw new ConflictError(`Only ${remaining} spot(s) remaining for ${data.startTime}.`);
+        }
+      }
+    }
   }
 
   // Calculate pricing — override for multi-unit room selection
@@ -481,17 +597,24 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
     const nights = calculateNights(checkIn, checkOut);
     const rooms: any[] = item.rooms || [];
     const roomMap = new Map(rooms.map((r: any) => [r.id, r]));
-    let roomBaseAmount = 0;
+    
+    let totalRoomBasePrice = 0;
     for (const [roomId, qty] of Object.entries(data.roomSelections)) {
       if (qty <= 0) continue;
       const room = roomMap.get(roomId);
-      if (room) roomBaseAmount += room.basePrice * qty * nights;
+      if (room) totalRoomBasePrice += room.basePrice * qty;
     }
-    // Use listing-level fees; baseAmount = rooms total
-    const tempItem = { ...item, basePrice: roomBaseAmount / Math.max(nights, 1) };
+    
+    const weekendRatio = item.basePrice > 0 && item.weekendPrice ? (item.weekendPrice / item.basePrice) : 1;
+    
+    // Inject the scaled prices so calculateBookingPricing iterates over days correctly
+    const tempItem = { 
+      ...item, 
+      basePrice: totalRoomBasePrice, 
+      weekendPrice: totalRoomBasePrice * weekendRatio 
+    };
+    
     pricing = await calculateBookingPricing(tempItem, data.itemType, checkIn, checkOut, data.guests, data.couponCode);
-    pricing.baseAmount = roomBaseAmount;
-    pricing.nights = nights;
   } else {
     pricing = await calculateBookingPricing(item, data.itemType, checkIn, checkOut, data.guests, data.couponCode);
   }
@@ -545,6 +668,7 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
       guestPhone: data.guestPhone || user.phone,
       specialRequests: data.specialRequests || null,
       couponCode: data.couponCode?.toUpperCase() || null,
+      roomSelections: data.roomSelections ?? undefined,
       couponId: pricing.discountAmount > 0 ? (await prisma.coupon.findUnique({ where: { code: data.couponCode!.toUpperCase() } }))?.id : null,
       expiresAt,
     },
@@ -583,13 +707,13 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
     },
   });
 
-  // Send notifications
-  await sendBookingNotifications(booking, item, user, "created");
+  // Wait for payment before sending confirmation notifications
+  // await sendBookingNotifications(booking, item, user, "created");
 
   // Audit log
   await createAuditLog({
     actorId: userId,
-    actorEmail: user.email,
+    actorEmail: user.email || undefined,
     actorRole: user.role,
     action: "BOOKING_CREATED",
     category: "booking",
@@ -604,41 +728,80 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
 }
 
 // ─── Send booking notifications ───
-async function sendBookingNotifications(booking: any, item: any, user: any, event: string) {
-  const host = await prisma.user.findUnique({ where: { id: item.hostId } });
+export async function sendBookingNotifications(bookingId: string, event: "paid" | "confirmed" | "rejected") {
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  if (!booking) return;
 
-  if (event === "created") {
+  const host = await prisma.user.findUnique({ where: { id: booking.hostId } });
+
+  if (event === "confirmed" || event === "paid") {
     // Notify guest
     if (booking.guestEmail) {
-      await sendTemplatedEmail(booking.guestEmail, "bookingConfirmation", {
-        guestName: booking.guestName,
-        itemName: booking.itemName,
-        bookingRef: booking.bookingRef,
-        checkIn: booking.checkIn?.toLocaleDateString(),
-        checkOut: booking.checkOut?.toLocaleDateString(),
-        guests: booking.guests,
-        totalAmount: booking.totalAmount,
-      });
+      try {
+        await sendTemplatedEmail(booking.guestEmail, "bookingConfirmation", {
+          guestName: booking.guestName,
+          itemName: booking.itemName,
+          bookingRef: booking.bookingRef,
+          checkIn: booking.checkIn?.toLocaleDateString(),
+          checkOut: booking.checkOut?.toLocaleDateString(),
+          guests: booking.guests,
+          totalAmount: booking.totalAmount,
+        });
+      } catch (err) {
+        logger.error(`Failed to send confirmation email to guest ${booking.guestEmail}:`, err);
+      }
     }
 
     // Notify host
     if (host) {
-      await sendTemplatedEmail(host.email, "hostBookingNotification", {
-        hostName: host.name,
-        itemName: booking.itemName,
-        bookingRef: booking.bookingRef,
-        guestName: booking.guestName,
-        checkIn: booking.checkIn?.toLocaleDateString(),
-        checkOut: booking.checkOut?.toLocaleDateString(),
-        guests: booking.guests,
-        hostPayout: booking.hostPayoutAmount,
-      });
+      if (host.email) {
+        try {
+          await sendTemplatedEmail(host.email, "hostBookingNotification", {
+            hostName: host.name,
+            itemName: booking.itemName,
+            bookingRef: booking.bookingRef,
+            guestName: booking.guestName,
+            checkIn: booking.checkIn?.toLocaleDateString(),
+            checkOut: booking.checkOut?.toLocaleDateString(),
+            guests: booking.guests,
+            hostPayout: booking.hostPayoutAmount,
+          });
+        } catch (err) {
+          logger.error(`Failed to send notification email to host ${host.email}:`, err);
+        }
+      }
 
-      await sendPushToUser(host.id, {
-        title: "New Booking Received!",
-        body: `${booking.guestName} booked ${booking.itemName}`,
+      try {
+        await sendPushToUser(host.id, {
+          title: "New Booking Received!",
+          body: `${booking.guestName} booked ${booking.itemName}`,
+          data: { bookingId: booking.id, type: "booking" },
+        });
+      } catch (err) {
+        logger.error(`Failed to send push notification to host ${host.id}:`, err);
+      }
+    }
+  } else if (event === "rejected") {
+    // Notify guest
+    if (booking.guestEmail) {
+      try {
+        await sendTemplatedEmail(booking.guestEmail, "bookingCancellation", {
+          guestName: booking.guestName,
+          itemName: booking.itemName,
+          bookingRef: booking.bookingRef,
+        });
+      } catch (err) {
+        logger.error(`Failed to send rejection email to guest ${booking.guestEmail}:`, err);
+      }
+    }
+    try {
+      await sendPushToUser(booking.userId, {
+        title: "Booking Rejected",
+        body: `Your booking for ${booking.itemName} was rejected by the host.`,
         data: { bookingId: booking.id, type: "booking" },
       });
+    } catch (err) {
+      logger.error(`Failed to send rejection push to guest ${booking.userId}:`, err);
     }
   }
 }
@@ -904,13 +1067,8 @@ export async function cancelBooking(
       cancellationReason: reason || null,
       cancelledBy,
       cancelledAt: now,
+      // Store the calculated refund amount, but let processRefund update the paymentStatus
       refundAmount,
-      paymentStatus:
-        refundAmount > 0 && booking.paymentStatus === "paid"
-          ? "refunded"
-          : booking.paymentStatus === "paid"
-            ? "failed"
-            : booking.paymentStatus,
     },
   });
 
@@ -926,7 +1084,7 @@ export async function cancelBooking(
   // ── Process actual refund via payment gateway (like Airbnb / OYO) ──
   // Only refund if the booking was actually paid and there's a refund due.
   let refundResult: { refundId: string | null; amount: number } | null = null;
-  if (booking.paymentStatus === "paid" && refundAmount > 0 && booking.gatewayPaymentId) {
+  if (booking.paymentStatus === "paid" && refundAmount > 0 && (booking.gatewayPaymentId || booking.paymentGateway === "wallet")) {
     try {
       const { processRefund } = await import("./payment.service.js");
       refundResult = await processRefund(
@@ -1083,24 +1241,8 @@ export async function confirmBooking(bookingId: string, hostId: string) {
     },
   });
 
-  // Notify guest
-  if (booking.guestEmail) {
-    await sendTemplatedEmail(booking.guestEmail, "bookingConfirmation", {
-      guestName: booking.guestName,
-      itemName: booking.itemName,
-      bookingRef: booking.bookingRef,
-      checkIn: booking.checkIn?.toLocaleDateString(),
-      checkOut: booking.checkOut?.toLocaleDateString(),
-      guests: booking.guests,
-      totalAmount: booking.totalAmount,
-    });
-  }
-
-  await sendPushToUser(booking.userId, {
-    title: "Booking Confirmed!",
-    body: `Your booking for ${booking.itemName} has been confirmed.`,
-    data: { bookingId, type: "booking" },
-  });
+  // Notify guest and host
+  await sendBookingNotifications(booking.id, "confirmed");
 
   await createAuditLog({
     actorId: hostId,
@@ -1145,11 +1287,8 @@ export async function rejectBooking(bookingId: string, hostId: string, reason?: 
   // Release coupon usage if applicable
   await releaseCouponUsage(bookingId);
 
-  await sendPushToUser(booking.userId, {
-    title: "Booking Rejected",
-    body: `Your booking for ${booking.itemName} was rejected by the host.`,
-    data: { bookingId, type: "booking" },
-  });
+  // Notify guest
+  await sendBookingNotifications(booking.id, "rejected");
 
   await createAuditLog({
     actorId: hostId,
@@ -1200,10 +1339,11 @@ export async function getBookingPreview(data: {
   checkOut?: string;
   guests: number;
   couponCode?: string;
+  roomSelections?: Record<string, number>;
 }) {
   let item: any;
   if (data.itemType === "listing") {
-    item = await prisma.listing.findUnique({ where: { id: data.itemId } });
+    item = await prisma.listing.findUnique({ where: { id: data.itemId }, include: { rooms: true } });
   } else {
     item = await prisma.activity.findUnique({ where: { id: data.itemId } });
   }
@@ -1212,6 +1352,40 @@ export async function getBookingPreview(data: {
 
   const checkIn = data.checkIn ? new Date(data.checkIn) : null;
   const checkOut = data.checkOut ? new Date(data.checkOut) : null;
+
+  // For room-based listings with room selections, compute room-based pricing
+  if (data.itemType === "listing" && !item.isEntirePlace) {
+    if (!data.roomSelections || Object.keys(data.roomSelections).length === 0) {
+      throw new BadRequestError("Room selections are required to calculate price for this property.");
+    }
+    if (!checkIn || !checkOut) {
+      throw new BadRequestError("Check-in and check-out dates are required.");
+    }
+
+    const nights = Math.max(1, Math.ceil((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24)));
+    const rooms: any[] = item.rooms || [];
+    const roomMap = new Map(rooms.map((r: any) => [r.id, r]));
+    let totalRoomBasePrice = 0;
+    for (const [roomId, qty] of Object.entries(data.roomSelections)) {
+      if (qty <= 0) continue;
+      const room = roomMap.get(roomId);
+      if (room) totalRoomBasePrice += room.basePrice * qty;
+    }
+    
+    const weekendRatio = item.basePrice > 0 && item.weekendPrice ? (item.weekendPrice / item.basePrice) : 1;
+    
+    const tempItem = { 
+      ...item, 
+      basePrice: totalRoomBasePrice, 
+      weekendPrice: totalRoomBasePrice * weekendRatio 
+    };
+    
+    const pricing = await calculateBookingPricing(tempItem, data.itemType, checkIn, checkOut, data.guests, data.couponCode);
+    return {
+      item: { id: item.id, name: item.name, slug: item.slug },
+      pricing,
+    };
+  }
 
   const pricing = await calculateBookingPricing(item, data.itemType, checkIn, checkOut, data.guests, data.couponCode);
 

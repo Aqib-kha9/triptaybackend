@@ -4,7 +4,7 @@ import { prisma } from "../config/db.js";
 
 interface DecodedToken {
   id: string;
-  email: string;
+  email: string | null;
   role: string;
 }
 

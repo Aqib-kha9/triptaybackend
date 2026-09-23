@@ -251,6 +251,28 @@ export async function createListing(hostId: string, data: CreateListingInput) {
     return !!existing;
   });
 
+  let calcMaxGuests = Number(data.maxGuests);
+  let calcBedrooms = data.bedrooms !== undefined ? Number(data.bedrooms) : 1;
+  let calcBeds = data.beds !== undefined ? Number(data.beds) : 1;
+  let calcBathrooms = data.bathrooms !== undefined ? Number(data.bathrooms) : 1;
+  let calcExtraMattresses = data.extraMattresses !== undefined ? Number(data.extraMattresses) : 0;
+  let calcHasKitchen = data.hasKitchen ?? false;
+  let calcKitchenDetails = data.kitchenDetails?.trim() || null;
+  let calcMaxGuestsPerBooking: number | null = data.maxGuestsPerBooking !== undefined
+        ? Number(data.maxGuestsPerBooking)
+        : Number(data.maxGuests);
+
+  if (data.isEntirePlace === false && data.rooms && data.rooms.length > 0) {
+    calcMaxGuests = data.rooms.reduce((sum, r) => sum + (r.maxGuests * r.inventory), 0);
+    calcBedrooms = data.rooms.reduce((sum, r) => sum + r.inventory, 0);
+    calcBeds = data.rooms.reduce((sum, r) => sum + (r.beds * r.inventory), 0);
+    calcBathrooms = data.rooms.reduce((sum, r) => sum + (r.bathrooms * r.inventory), 0);
+    calcExtraMattresses = 0;
+    calcHasKitchen = false;
+    calcKitchenDetails = null;
+    calcMaxGuestsPerBooking = null;
+  }
+
   const listing = await prisma.listing.create({
     data: {
       hostId,
@@ -272,11 +294,11 @@ export async function createListing(hostId: string, data: CreateListingInput) {
       lat: Number(data.coordinates.lat),
       lng: Number(data.coordinates.lng),
       landmark: data.landmark?.trim() || null,
-      maxGuests: Number(data.maxGuests),
-      bedrooms: data.bedrooms !== undefined ? Number(data.bedrooms) : 1,
-      beds: data.beds !== undefined ? Number(data.beds) : 1,
-      bathrooms: data.bathrooms !== undefined ? Number(data.bathrooms) : 1,
-      extraMattresses: data.extraMattresses !== undefined ? Number(data.extraMattresses) : 0,
+      maxGuests: calcMaxGuests,
+      bedrooms: calcBedrooms,
+      beds: calcBeds,
+      bathrooms: calcBathrooms,
+      extraMattresses: calcExtraMattresses,
       basePrice: Number(data.basePrice),
       weekendPrice: data.weekendPrice !== undefined ? Number(data.weekendPrice) : null,
       seasonalPrices: (data.seasonalPrices as object) || null,
@@ -292,8 +314,8 @@ export async function createListing(hostId: string, data: CreateListingInput) {
       flexibleCheckOut: data.flexibleCheckOut ?? false,
       amenities: data.amenities || [],
       meals: (data.meals as object) || null,
-      hasKitchen: data.hasKitchen ?? false,
-      kitchenDetails: data.kitchenDetails?.trim() || null,
+      hasKitchen: calcHasKitchen,
+      kitchenDetails: calcKitchenDetails,
       houseRules: (data.houseRules as object) || null,
       cancellationPolicy: await resolveCancellationPolicy(data.cancellationPolicy),
       cancellationDetails: data.cancellationDetails?.trim() || null,
@@ -307,9 +329,7 @@ export async function createListing(hostId: string, data: CreateListingInput) {
       languagesSpoken: data.languagesSpoken || [],
       instantBook: data.instantBook ?? true,
       advanceNoticeHours: data.advanceNoticeHours !== undefined ? Number(data.advanceNoticeHours) : 0,
-      maxGuestsPerBooking: data.maxGuestsPerBooking !== undefined
-        ? Number(data.maxGuestsPerBooking)
-        : Number(data.maxGuests),
+      maxGuestsPerBooking: calcMaxGuestsPerBooking,
       status: data.status || "draft",
       media: [],
       rooms: data.rooms && data.rooms.length > 0 ? {
@@ -465,6 +485,18 @@ export async function updateListing(id: string, hostId: string, data: Record<str
         amenities: r.amenities,
       }))
     };
+  }
+
+  const isEntirePlace = updateData.isEntirePlace !== undefined ? updateData.isEntirePlace : listing.isEntirePlace;
+  if (isEntirePlace === false && data.rooms && Array.isArray(data.rooms)) {
+    updateData.maxGuests = data.rooms.reduce((sum: number, r: any) => sum + (Number(r.maxGuests || 0) * Number(r.inventory || 1)), 0);
+    updateData.bedrooms = data.rooms.reduce((sum: number, r: any) => sum + Number(r.inventory || 1), 0);
+    updateData.beds = data.rooms.reduce((sum: number, r: any) => sum + (Number(r.beds || 0) * Number(r.inventory || 1)), 0);
+    updateData.bathrooms = data.rooms.reduce((sum: number, r: any) => sum + (Number(r.bathrooms || 0) * Number(r.inventory || 1)), 0);
+    updateData.extraMattresses = 0;
+    updateData.maxGuestsPerBooking = null;
+    updateData.hasKitchen = false;
+    updateData.kitchenDetails = null;
   }
 
   const updated = await prisma.listing.update({

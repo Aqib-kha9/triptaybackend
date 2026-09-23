@@ -11,7 +11,7 @@ export const walletController = {
       if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
       const history = await walletService.getWalletHistory(userId);
-      res.json(history);
+      res.json({ status: "success", data: history });
     } catch (error: any) {
       console.error("[Wallet getHistory Error]:", error);
       res.status(500).json({ message: error.message || "Internal server error" });
@@ -39,11 +39,20 @@ export const walletController = {
         notes: { userId, type: "wallet_topup" },
       });
 
+      const settings = await getGatewaySettings();
+      const keyId = settings.razorpay.liveMode 
+        ? settings.razorpay.keyId 
+        : (settings.razorpay.testKeyId || settings.razorpay.keyId);
+
       res.json({
-        message: "Order created successfully",
-        orderId: order.id,
-        amount: order.amount,
-        currency: order.currency,
+        status: "success",
+        data: {
+          message: "Order created successfully",
+          orderId: order.id,
+          amount: order.amount,
+          currency: order.currency,
+          keyId: keyId,
+        }
       });
     } catch (error: any) {
       console.error("[Wallet createOrder Error]:", error);
@@ -82,8 +91,11 @@ export const walletController = {
       const txn = await walletService.addMoney(userId, amount, "Added to Wallet", `Top-up via Razorpay (${razorpayPaymentId})`);
       
       res.json({
-        message: `Successfully added ₹${amount} to your wallet.`,
-        transaction: txn,
+        status: "success",
+        data: {
+          message: `Successfully added ₹${amount} to your wallet.`,
+          transaction: txn,
+        }
       });
     } catch (error: any) {
       console.error("[Wallet verifyPayment Error]:", error);

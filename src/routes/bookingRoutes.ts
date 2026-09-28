@@ -15,6 +15,8 @@ import {
   rejectBooking,
   completeBooking,
   verifyBookingOtp,
+  confirmPapCollection,
+  settlePapDebt,
 } from "../controllers/bookingController.js";
 
 const router = Router();
@@ -51,6 +53,12 @@ router.post("/:id/reject", restrictTo("Vendor", "Dual Mode") as any, validate(sc
 
 // ── Verify Check-In OTP (host only) ──
 router.post("/:id/verify-otp", restrictTo("Vendor", "Dual Mode") as any, verifyBookingOtp as any);
+
+// ── PAP: Vendor confirms cash collection ──
+router.post("/:id/pap-confirm", restrictTo("Vendor", "Dual Mode") as any, confirmPapCollection as any);
+
+// ── PAP: Admin settles the commission debt ──
+router.post("/:id/pap-settle", protect as any, settlePapDebt as any);
 
 // ── Complete a booking (admin only) ──
 router.post("/:id/complete", adminProtect as any, completeBooking as any);

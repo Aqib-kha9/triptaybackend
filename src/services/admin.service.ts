@@ -1297,3 +1297,30 @@ export async function adminCancelBooking(
     refundAmount: (oldStatus === "Confirmed" || oldStatus === "Completed") ? booking.totalAmount : 0,
   };
 }
+
+// ──────────────────────── System Settings ────────────────────────
+
+export async function getSystemSettings() {
+  let settings = await prisma.systemSettings.findFirst();
+  if (!settings) {
+    settings = await prisma.systemSettings.create({
+      data: { isPayAtPropertyEnabled: false },
+    });
+  }
+  return settings;
+}
+
+export async function updateSystemSettings(data: { isPayAtPropertyEnabled?: boolean }) {
+  let settings = await prisma.systemSettings.findFirst();
+  if (!settings) {
+    settings = await prisma.systemSettings.create({
+      data: { isPayAtPropertyEnabled: data.isPayAtPropertyEnabled || false },
+    });
+  } else {
+    settings = await prisma.systemSettings.update({
+      where: { id: settings.id },
+      data,
+    });
+  }
+  return settings;
+}

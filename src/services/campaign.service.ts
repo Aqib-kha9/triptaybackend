@@ -6,7 +6,7 @@ import {
 import { logger } from "../core/logger.js";
 import { createAuditLog } from "./audit.service.js";
 import { cacheDelPattern } from "../config/redis.js";
-import { sendBulkEmails } from "./email.service.js";
+import { sendEmail, sendBulkEmails } from "./email.service.js";
 import { sendWhatsAppText } from "./whatsapp.service.js";
 import { sendPushToUser } from "./push.service.js";
 
@@ -37,7 +37,7 @@ function resolvePagination(pageStr?: string, limitStr?: string, defaultLimit = 2
 }
 
 // ─── Resolve audience based on segment ───
-async function resolveAudience(segment: string): Promise<{ userIds: string[]; emails: string[]; phones: string[] }> {
+async function resolveAudience(segment: string): Promise<{ users: any[]; userIds: string[]; emails: string[]; phones: string[] }> {
   let where: Record<string, unknown> = { status: "active" };
 
   switch (segment) {
@@ -54,10 +54,11 @@ async function resolveAudience(segment: string): Promise<{ userIds: string[]; em
 
   const users = await prisma.user.findMany({
     where,
-    select: { id: true, email: true, phone: true },
+    select: { id: true, email: true, phone: true, name: true },
   });
 
   return {
+    users,
     userIds: users.map((u) => u.id),
     emails: users.map((u) => u.email).filter((e): e is string => Boolean(e)),
     phones: users.map((u) => u.phone).filter((p): p is string => Boolean(p)),
@@ -244,50 +245,59 @@ export async function executeCampaign(campaignId: string, adminId: string) {
   let totalFailed = 0;
 
   try {
-    if (campaign.type === "email" || campaign.type === "multi") {
-      if (audience.emails.length > 0) {
-        const result = await sendBulkEmails(
-          audience.emails,
-          campaign.subject || campaign.name,
-          campaign.body,
-        );
-        totalSent += result.sent + result.failed;
-        totalDelivered += result.sent;
-        totalFailed += result.failed;
-      }
-    }
+    const { users } = audience;
+    
+    // Process in batches of 10 to avoid overwhelming services
+    const batchSize = 10;
+    for (let i = 0; i < users.length; i += batchSize) {
+      const batch = users.slice(i, i + batchSize);
+      
+      const promises = batch.map(async (user: any) => {
+        let sentCount = 0;
+        let failedCount = 0;
+        
+        // Replace placeholders
+        const personalizedSubject = (campaign.subject || campaign.name).replace(/{{name}}/gi, user.name || "Guest");
+        const personalizedBody = campaign.body.replace(/{{name}}/gi, user.name || "Guest");
 
-    if (campaign.type === "whatsapp" || campaign.type === "multi") {
-      // Send WhatsApp messages
-      for (const phone of audience.phones) {
-        try {
-          await sendWhatsAppText({
-            to: phone,
-            body: campaign.body,
-          });
-          totalSent++;
-          totalDelivered++;
-        } catch {
-          totalSent++;
-          totalFailed++;
+        // 1. Email
+        if ((campaign.type === "email" || campaign.type === "multi") && user.email) {
+          try {
+            await sendEmail(user.email, personalizedSubject, personalizedBody, personalizedBody);
+            sentCount++;
+          } catch {
+            failedCount++;
+          }
         }
-      }
-    }
 
-    if (campaign.type === "push" || campaign.type === "multi") {
-      // Send push notifications
-      for (const userId of audience.userIds) {
-        try {
-          await sendPushToUser(userId, {
-            title: campaign.subject || campaign.name,
-            body: campaign.body.substring(0, 200),
-          });
-          totalSent++;
-          totalDelivered++;
-        } catch {
-          totalSent++;
-          totalFailed++;
+        // 2. WhatsApp
+        if ((campaign.type === "whatsapp" || campaign.type === "multi") && user.phone) {
+          try {
+            await sendWhatsAppText({ to: user.phone, body: personalizedBody });
+            sentCount++;
+          } catch {
+            failedCount++;
+          }
         }
+
+        // 3. Push
+        if (campaign.type === "push" || campaign.type === "multi") {
+          try {
+            await sendPushToUser(user.id, { title: personalizedSubject, body: personalizedBody.substring(0, 200) });
+            sentCount++;
+          } catch {
+            failedCount++;
+          }
+        }
+
+        return { sentCount, failedCount };
+      });
+
+      const results = await Promise.all(promises);
+      for (const res of results) {
+        totalSent += res.sentCount + res.failedCount;
+        totalDelivered += res.sentCount;
+        totalFailed += res.failedCount;
       }
     }
 

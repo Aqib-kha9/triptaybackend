@@ -46,7 +46,7 @@ export async function getHostPendingPayouts(hostId: string) {
       status: "pending",
       booking: {
         paymentStatus: "paid",
-        status: { in: ["confirmed", "completed"] },
+        status: { in: ["confirmed", "completed", "cancelled"] },
       },
     },
   });
@@ -86,7 +86,7 @@ export async function processPayout(
     status: "pending",
     booking: {
       paymentStatus: "paid",
-      status: { in: ["confirmed", "completed"] },
+      status: { in: ["confirmed", "completed", "cancelled"] },
     }
   };
 
@@ -107,8 +107,10 @@ export async function processPayout(
   const netAmount = totalAmount;
 
   // Check minimum payout amount
-  if (netAmount < config.commission.minPayoutAmount) {
-    throw new BadRequestError(`Minimum payout amount is ₹${config.commission.minPayoutAmount}.`);
+  const thresholdConfig = await prisma.configuration.findUnique({ where: { key: "payout_min_threshold" } });
+  const minPayoutAmount = thresholdConfig ? parseFloat(thresholdConfig.value) : config.commission.minPayoutAmount;
+  if (netAmount < minPayoutAmount) {
+    throw new BadRequestError(`Minimum payout amount is ₹${minPayoutAmount}.`);
   }
 
   // Create payout record
@@ -288,7 +290,7 @@ export async function getCommissionSummary(params: {
   const where: Record<string, unknown> = {
     booking: {
       paymentStatus: "paid",
-      status: { in: ["confirmed", "completed"] },
+      status: { in: ["confirmed", "completed", "cancelled"] },
     }
   };
   if (params.startDate || params.endDate) {
@@ -300,24 +302,48 @@ export async function getCommissionSummary(params: {
   const commissions = await prisma.commission.findMany({ where });
 
   const totalCommission = commissions.reduce((sum, c) => sum + c.commissionAmount, 0);
-  const totalHostPayout = commissions.reduce((sum, c) => sum + c.hostPayoutAmount, 0);
+  const totalHostPayout = commissions.reduce((sum, c) => sum + (c.isPapBooking ? 0 : c.hostPayoutAmount), 0);
+  const totalGst = commissions.reduce((sum, c) => sum + (c.gstOnCommission || 0), 0);
   const pendingCommission = commissions
     .filter((c) => c.status === "pending")
-    .reduce((sum, c) => sum + c.commissionAmount, 0);
+    .reduce((sum, c) => sum + (c.isPapBooking ? 0 : c.hostPayoutAmount), 0);
   const processedCommission = commissions
     .filter((c) => c.status === "processed")
-    .reduce((sum, c) => sum + c.commissionAmount, 0);
+    .reduce((sum, c) => sum + (c.isPapBooking ? 0 : c.hostPayoutAmount), 0);
 
   // Get host-wise breakdown
-  const hostMap = new Map<string, { hostId: string; commission: number; payout: number; pending: number }>();
+  const hostMap = new Map<string, { hostId: string; commission: number; payout: number; pending: number; papDebtPending: number }>();
   for (const c of commissions) {
     if (!hostMap.has(c.hostId)) {
-      hostMap.set(c.hostId, { hostId: c.hostId, commission: 0, payout: 0, pending: 0 });
+      hostMap.set(c.hostId, { hostId: c.hostId, commission: 0, payout: 0, pending: 0, papDebtPending: 0 });
     }
     const entry = hostMap.get(c.hostId)!;
     entry.commission += c.commissionAmount;
-    entry.payout += c.hostPayoutAmount;
-    if (c.status === "pending") entry.pending += c.hostPayoutAmount;
+    entry.payout += c.isPapBooking ? 0 : c.hostPayoutAmount;
+    if (c.status === "pending") entry.pending += (c.isPapBooking ? 0 : c.hostPayoutAmount);
+  }
+
+  // Calculate PAP Debt for each host
+  const papDebts = await prisma.booking.groupBy({
+    by: ['hostId'],
+    where: {
+      paymentMethod: "PAY_AT_PROPERTY",
+      papSettlementStatus: "pending",
+      status: { in: ["confirmed", "completed"] },
+    },
+    _sum: {
+      vendorDebtAmount: true,
+    },
+  });
+
+  for (const debt of papDebts) {
+    if (debt.hostId) {
+      if (!hostMap.has(debt.hostId)) {
+        hostMap.set(debt.hostId, { hostId: debt.hostId, commission: 0, payout: 0, pending: 0, papDebtPending: 0 });
+      }
+      const entry = hostMap.get(debt.hostId)!;
+      entry.papDebtPending += (debt._sum.vendorDebtAmount || 0);
+    }
   }
 
   // Get host details
@@ -337,6 +363,7 @@ export async function getCommissionSummary(params: {
     summary: {
       totalCommission,
       totalHostPayout,
+      totalGst,
       pendingCommission,
       processedCommission,
       totalTransactions: commissions.length,
@@ -358,7 +385,7 @@ export async function getHostLedger(
     hostId,
     booking: {
       paymentStatus: "paid",
-      status: { in: ["confirmed", "completed"] },
+      status: { in: ["confirmed", "completed", "cancelled"] },
     }
   };
   if (params.startDate || params.endDate) {
@@ -367,7 +394,7 @@ export async function getHostLedger(
     if (params.endDate) (where.createdAt as any).lte = params.endDate;
   }
 
-  const [commissions, total, aggregations, pendingAggregations] = await Promise.all([
+  const [commissions, total, commAgg, payoutAgg, pendingAgg, papDebtAgg] = await Promise.all([
     prisma.commission.findMany({
       where,
       orderBy: { createdAt: "desc" },
@@ -382,6 +409,7 @@ export async function getHostLedger(
             status: true,
             paymentStatus: true,
             completedAt: true,
+            vendorDebtAmount: true,
           },
         },
       },
@@ -392,11 +420,23 @@ export async function getHostLedger(
         hostId,
         booking: {
           paymentStatus: "paid",
-          status: { in: ["confirmed", "completed"] },
+          status: { in: ["confirmed", "completed", "cancelled"] },
         },
       },
       _sum: {
         commissionAmount: true,
+      },
+    }),
+    prisma.commission.aggregate({
+      where: {
+        hostId,
+        isPapBooking: false,
+        booking: {
+          paymentStatus: "paid",
+          status: { in: ["confirmed", "completed", "cancelled"] },
+        },
+      },
+      _sum: {
         hostPayoutAmount: true,
       },
     }),
@@ -404,20 +444,33 @@ export async function getHostLedger(
       where: {
         hostId,
         status: "pending",
+        isPapBooking: false,
         booking: {
           paymentStatus: "paid",
-          status: { in: ["confirmed", "completed"] },
+          status: { in: ["confirmed", "completed", "cancelled"] },
         },
       },
       _sum: {
         hostPayoutAmount: true,
       },
     }),
+    prisma.booking.aggregate({
+      where: {
+        hostId,
+        paymentMethod: "PAY_AT_PROPERTY",
+        papSettlementStatus: "pending",
+        status: { in: ["confirmed", "completed"] },
+      },
+      _sum: {
+        vendorDebtAmount: true,
+      },
+    }),
   ]);
 
-  const totalCommission = aggregations._sum.commissionAmount || 0;
-  const totalPayout = aggregations._sum.hostPayoutAmount || 0;
-  const pendingPayout = pendingAggregations._sum.hostPayoutAmount || 0;
+  const totalCommission = commAgg._sum.commissionAmount || 0;
+  const totalPayout = payoutAgg._sum.hostPayoutAmount || 0;
+  const pendingPayout = pendingAgg._sum.hostPayoutAmount || 0;
+  const papDebtPending = papDebtAgg._sum.vendorDebtAmount || 0;
 
   return {
     ledger: commissions,
@@ -425,6 +478,7 @@ export async function getHostLedger(
       totalCommission,
       totalPayout,
       pendingPayout,
+      papDebtPending,
       count: total,
     },
     pagination: {

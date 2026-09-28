@@ -220,3 +220,38 @@ export const completeBooking = async (req: any, res: Response, next: NextFunctio
     next(error);
   }
 };
+
+// @desc    Vendor confirms physical cash collected from guest (PAP)
+// @route   POST /api/bookings/:id/pap-confirm
+// @access  Private (Vendor)
+export const confirmPapCollection = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const booking = await bookingService.confirmPapCollection(req.params.id, req.user.id);
+    res.status(200).json({
+      status: "success",
+      message: "Cash collection confirmed. Commission debt is now pending settlement.",
+      data: { booking },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Vendor or Admin settles the PAP commission debt
+// @route   POST /api/bookings/:id/pap-settle
+// @access  Private
+export const settlePapDebt = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { method = "manual" } = req.body;
+    const isAdmin = !!req.admin;
+    const callerId = req.admin?.id || req.user?.id;
+    const booking = await bookingService.settlePapDebt(req.params.id, callerId, isAdmin, method);
+    res.status(200).json({
+      status: "success",
+      message: `PAP debt settled via ${method === "wallet_deduction" ? "vendor wallet deduction" : "manual settlement"}.`,
+      data: { booking },
+    });
+  } catch (error) {
+    next(error);
+  }
+};

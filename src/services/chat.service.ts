@@ -9,6 +9,7 @@ export interface ChatParticipant {
   name: string;
   email: string | null;
   avatar?: string | null;
+  role?: string | null;
 }
 
 export interface BookingContext {
@@ -85,9 +86,9 @@ async function resolveBookingContext(
 async function fetchParticipants(ids: string[]): Promise<Map<string, ChatParticipant>> {
   const users = await prisma.user.findMany({
     where: { id: { in: ids } },
-    select: { id: true, name: true, email: true, avatar: true },
+    select: { id: true, name: true, email: true, avatar: true, role: true },
   });
-  return new Map(users.map((u) => [u.id, { _id: u.id, name: u.name, email: u.email, avatar: u.avatar }]));
+  return new Map(users.map((u) => [u.id, { _id: u.id, name: u.name, email: u.email, avatar: u.avatar, role: u.role }]));
 }
 
 function formatSingleConversation(
@@ -198,6 +199,18 @@ export async function getMyConversations(userId: string): Promise<FormattedConve
     orderBy: { updatedAt: "desc" },
   });
 
+  return formatConversationsList(conversations, userId);
+}
+
+export async function getAllConversations(): Promise<FormattedConversation[]> {
+  const conversations = await prisma.conversation.findMany({
+    orderBy: { updatedAt: "desc" },
+  });
+
+  return formatConversationsList(conversations, "ADMIN-000"); // Admin pseudo ID
+}
+
+async function formatConversationsList(conversations: any[], viewerId: string) {
   const userIds = Array.from(new Set(conversations.flatMap((c) => c.participants)));
   const userMap = await fetchParticipants(userIds);
 
@@ -206,18 +219,27 @@ export async function getMyConversations(userId: string): Promise<FormattedConve
       .map((pid: string) => userMap.get(pid))
       .filter(Boolean);
 
-    const otherParticipant = populatedParticipants.find(
-      (p: any) => p._id.toString() !== userId.toString(),
+    // If admin is viewing, the otherUser might be the first participant (or we can return both)
+    // For admin, let's set otherUser as the Guest or first participant that isn't admin
+    let otherParticipant = populatedParticipants.find(
+      (p: any) => p._id.toString() !== viewerId.toString(),
     );
+    
+    // If admin, they might not be in participants at all, so otherParticipant is just the first one
+    if (!otherParticipant && populatedParticipants.length > 0) {
+        otherParticipant = populatedParticipants[0];
+    }
 
     const unreadObj = (c.unreadCount && typeof c.unreadCount === "object" ? c.unreadCount : {}) as Record<string, number>;
-    const unreadCount = unreadObj[userId] || 0;
+    const unreadCount = unreadObj[viewerId] || 0;
 
     return {
       _id: c.id,
       otherUser: otherParticipant
         ? { _id: otherParticipant._id, name: otherParticipant.name, email: otherParticipant.email, avatar: otherParticipant.avatar }
         : null,
+      // Pass all participants for admin UI
+      allParticipants: populatedParticipants.map((p: any) => ({ _id: p._id, name: p.name, email: p.email, avatar: p.avatar, role: p.role })),
       listingId: c.listingId,
       activityId: c.activityId,
       bookingContext: c.bookingTitle
@@ -245,11 +267,12 @@ export async function getMessages(
   conversationId: string,
   page: number,
   limit: number,
+  isAdmin: boolean = false,
 ) {
   const conversation = await prisma.conversation.findFirst({
     where: {
       id: conversationId,
-      participants: { has: userId },
+      ...(isAdmin ? {} : { participants: { has: userId } }),
     },
   });
 
@@ -275,31 +298,35 @@ export async function getMessages(
     mapMessage(m as unknown as Record<string, unknown>, senders),
   );
 
-  // Mark unread messages as read
-  await prisma.message.updateMany({
-    where: {
-      conversationId,
-      senderId: { not: userId },
-      isRead: false,
-    },
-    data: {
-      isRead: true,
-      readAt: new Date(),
-    },
-  });
+  // Mark unread messages as read (skip for admin so they don't mark user messages as read)
+  if (!isAdmin) {
+    await prisma.message.updateMany({
+      where: {
+        conversationId,
+        senderId: { not: userId },
+        isRead: false,
+      },
+      data: {
+        isRead: true,
+        readAt: new Date(),
+      },
+    });
+  }
 
   // Reset unread count for this user
-  const unreadObj = (
-    conversation.unreadCount && typeof conversation.unreadCount === "object"
-      ? { ...conversation.unreadCount }
-      : {}
-  ) as Record<string, number>;
-  unreadObj[userId] = 0;
+  if (!isAdmin) {
+    const unreadObj = (
+      conversation.unreadCount && typeof conversation.unreadCount === "object"
+        ? { ...conversation.unreadCount }
+        : {}
+    ) as Record<string, number>;
+    unreadObj[userId] = 0;
 
-  await prisma.conversation.update({
-    where: { id: conversationId },
-    data: { unreadCount: unreadObj },
-  });
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { unreadCount: unreadObj },
+    });
+  }
 
   return {
     messages: formattedMessages.reverse(), // chronological order
@@ -313,6 +340,7 @@ export async function sendMessage(
   userId: string,
   conversationId: string,
   data: SendMessageInput,
+  isAdmin: boolean = false
 ): Promise<FormattedMessage> {
   const { text, type = "text", mediaUrl, mediaType, fileName, fileSize } = data;
 
@@ -323,7 +351,7 @@ export async function sendMessage(
   const conversation = await prisma.conversation.findFirst({
     where: {
       id: conversationId,
-      participants: { has: userId },
+      ...(isAdmin ? {} : { participants: { has: userId } }),
       isActive: true,
     },
   });

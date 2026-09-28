@@ -35,8 +35,8 @@ export const config = {
   },
 
   rateLimit: {
-    auth: { windowMs: 15 * 60 * 1000, max: (process.env.NODE_ENV || "development") === "development" ? 99999 : 30 },
-    global: { windowMs: 15 * 60 * 1000, max: (process.env.NODE_ENV || "development") === "development" ? 99999 : 500 },
+    auth: { windowMs: 15 * 60 * 1000, max: parseInt(process.env.RATE_LIMIT_AUTH || "30", 10) },
+    global: { windowMs: 15 * 60 * 1000, max: parseInt(process.env.RATE_LIMIT_GLOBAL || "500", 10) },
   },
 
   upload: {

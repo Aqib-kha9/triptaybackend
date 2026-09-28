@@ -41,15 +41,16 @@ import {
   processManualPayout,
   listAuditLogs,
   archiveAuditLogs,
+  uploadAdminImage,
+  getGlobalChats,
+  getGlobalChatMessages,
+  sendGlobalChatMessage,
+  getSystemSettings,
+  updateSystemSettings
 } from "../controllers/adminController.js";
-import {
-  listAllDisputes,
-  getDisputeDetail,
-  updateDisputeStatus,
-  refundDispute,
-  releaseDispute,
-  getDisputeStats,
-} from "../controllers/disputeController.js";
+import { settlePapDebt } from "../controllers/bookingController.js";
+import { ticketController } from "../controllers/ticket.controller.js";
+
 import {
   createCampaign,
   listAllCampaigns,
@@ -165,6 +166,23 @@ router.post(
   uploadDestinationImage as any
 );
 
+router.post(
+  "/upload-image",
+  adminProtect,
+  (req: Request, res: Response, next: NextFunction) => {
+    destinationUpload.single("file")(req, res, (err: any) => {
+      if (err) {
+        if (err instanceof multer.MulterError) {
+          return res.status(400).json({ status: "fail", message: `Upload error: ${err.message}` });
+        }
+        return res.status(400).json({ status: "fail", message: err.message || "File upload failed." });
+      }
+      next();
+    });
+  },
+  uploadAdminImage as any
+);
+
 // ── Protected: Testimonial Management endpoints ──
 router.get("/testimonials", adminProtect, listTestimonials as any);
 router.post("/testimonials", adminProtect, validate(schemas.admin.testimonialCreate), createTestimonial as any);
@@ -178,6 +196,7 @@ router.get("/dashboard", adminProtect, getDashboardStats);
 router.get("/bookings", adminProtect, listAllBookings);
 router.get("/bookings/:bookingId", adminProtect, getBookingDetail);
 router.post("/bookings/:bookingId/cancel", adminProtect, cancelBooking);
+router.post("/bookings/:bookingId/pap-settle", adminProtect, settlePapDebt as any);
 
 // ── Protected: Coupon Administration endpoints ──
 router.get("/coupons", adminProtect, listAllCoupons);
@@ -190,18 +209,21 @@ router.get("/coupons/:couponId/stats", adminProtect, getCouponStats);
 router.get("/payouts", adminProtect, listAllPayouts);
 router.get("/commissions/summary", adminProtect, getCommissionSummary);
 router.post("/payouts/process", adminProtect, validate(schemas.commission.processPayout), processManualPayout);
+// ── Protected: Support Chats (Admin) ──
+router.get("/chats", adminProtect, getGlobalChats);
+router.get("/chats/:id/messages", adminProtect, getGlobalChatMessages);
+router.post("/chats/:id/messages", adminProtect, sendGlobalChatMessage);
 
 // ── Protected: Audit Log Administration endpoints ──
 router.get("/audits", adminProtect, listAuditLogs);
 router.post("/audits/archive", adminProtect, archiveAuditLogs);
 
-// ── Protected: Dispute Resolution endpoints ──
-router.get("/disputes", adminProtect, listAllDisputes);
-router.get("/disputes/stats", adminProtect, getDisputeStats);
-router.get("/disputes/:disputeId", adminProtect, getDisputeDetail);
-router.patch("/disputes/:disputeId/status", adminProtect, validate(schemas.dispute.updateStatus), updateDisputeStatus);
-router.post("/disputes/:disputeId/refund", adminProtect, refundDispute);
-router.post("/disputes/:disputeId/release", adminProtect, releaseDispute);
+// ── Protected: Ticket System endpoints ──
+router.get("/tickets", adminProtect, ticketController.getTickets);
+router.get("/tickets/:id", adminProtect, ticketController.getTicketById);
+router.patch("/tickets/:id", adminProtect, ticketController.updateTicket);
+router.delete("/tickets/:id", adminProtect, ticketController.deleteTicket);
+
 
 // ── Protected: Marketing Campaign endpoints ──
 router.get("/campaigns", adminProtect, listAllCampaigns);
@@ -235,5 +257,9 @@ router.post("/configurations/gateway-settings/test", adminProtect, testGatewayCo
 router.get("/configurations/:key", adminProtect, getConfiguration);
 router.put("/configurations/:key", adminProtect, validate(schemas.configuration.update), updateConfiguration);
 router.delete("/configurations/:key", adminProtect, deleteConfiguration);
+
+// ── Protected: System Settings endpoints ──
+router.get("/settings", adminProtect, getSystemSettings);
+router.put("/settings", adminProtect, updateSystemSettings);
 
 export default router;

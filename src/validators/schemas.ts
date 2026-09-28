@@ -210,6 +210,7 @@ export const createListingSchema = z.object({
   })).optional(),
   videoTourUrl: z.string().url().optional().or(z.literal("")),
   instantBook: z.boolean().optional().default(true),
+  allowPayAtProperty: z.boolean().optional().default(false),
   advanceNoticeHours: z.number().int().optional().default(0),
   maxGuestsPerBooking: z.number().int().nullable().optional(),
   languagesSpoken: z.array(z.string()).optional().default([]),
@@ -292,6 +293,7 @@ export const createActivitySchema = z.object({
   })).optional(),
   videoTourUrl: z.string().url().optional().or(z.literal("")),
   instantBook: z.boolean().optional().default(true),
+  allowPayAtProperty: z.boolean().optional().default(false),
   advanceNoticeHours: z.number().int().optional().default(0),
   maxGuestsPerBooking: z.number().int().optional(),
   languagesSpoken: z.array(z.string()).optional().default([]),
@@ -376,6 +378,7 @@ export const createBookingSchema = z.object({
   specialRequests: z.string().max(1000).optional(),
   couponCode: z.string().max(50).optional(),
   bookingType: BookingTypeEnum.optional().default("instant"),
+  paymentMethod: z.enum(["ONLINE", "PAY_AT_PROPERTY"]).optional().default("ONLINE"),
   roomSelections: z.record(z.number().int().min(0)).optional(),
 }).refine(
   (data) => {

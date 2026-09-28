@@ -19,14 +19,14 @@ import chatRoutes from "./routes/chatRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
 import wishlistRoutes from "./routes/wishlistRoutes.js";
 import communicationRoutes from "./routes/communicationRoutes.js";
-import disputeRoutes from "./routes/disputeRoutes.js";
+import ticketRoutes from "./routes/ticket.routes.js";
 import destinationRoutes from "./routes/destinationRoutes.js";
 import bookingRoutes from "./routes/bookingRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import couponRoutes from "./routes/couponRoutes.js";
 import commissionRoutes from "./routes/commissionRoutes.js";
 import searchRoutes from "./routes/searchRoutes.js";
-import supportRoutes from "./routes/supportRoutes.js";
+// support routes removed
 import reviewRoutes from "./routes/reviewRoutes.js";
 import walletRoutes from "./routes/walletRoutes.js";
 
@@ -109,6 +109,9 @@ const authLimiter = rateLimit({
     status: "fail",
     message: "Too many auth attempts from this IP, please try again after 15 minutes.",
   },
+  skip: (req) => {
+    return req.path.includes("/me");
+  }
 });
 app.use("/api/auth", authLimiter);
 
@@ -215,7 +218,7 @@ app.use("/api/commission", commissionRoutes);
 app.use("/api/communications", communicationRoutes);
 
 // Phase 5: Dispute Resolution routes (user-facing)
-app.use("/api/disputes", disputeRoutes);
+app.use("/api/tickets", ticketRoutes);
 
 import offerRoutes from "./routes/offerRoutes.js";
 
@@ -229,7 +232,7 @@ app.use("/api/reviews", reviewRoutes);
 app.use("/api/offers", offerRoutes);
 
 // Support routes (public write + admin read/write)
-app.use("/api/support", supportRoutes);
+// Support routes removed (replaced by tickets)
 
 // Health check endpoint
 app.get("/api/health", (_req: Request, res: Response) => {

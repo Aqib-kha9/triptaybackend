@@ -3,6 +3,8 @@ import * as adminService from "../services/admin.service.js";
 import * as couponService from "../services/coupon.service.js";
 import * as commissionService from "../services/commission.service.js";
 import * as auditService from "../services/audit.service.js";
+import { uploadMedia } from "../services/upload.service.js";
+import { getSocketIO } from "../socket/emitter.js";
 
 // ──────────────────────── Auth ────────────────────────
 
@@ -312,7 +314,7 @@ export const listAllUsers = async (req: any, res: Response, next: NextFunction):
 // @access  Private (Admin)
 export const getUserDetail = async (req: any, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const result = await adminService.getUserDetail(req.params.id);
+    const result = await adminService.getUserDetail(req.params.userId);
 
     res.status(200).json({
       status: "success",
@@ -663,6 +665,70 @@ export const processManualPayout = async (req: any, res: Response, next: NextFun
   }
 };
 
+// ──────────────────────── Support Chats (Admin) ────────────────────────
+
+// @desc    Get all conversations across the system
+// @route   GET /api/admin/chats
+// @access  Private (Admin)
+export const getGlobalChats = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const chatService = await import("../services/chat.service.js");
+    const conversations = await chatService.getAllConversations();
+    res.status(200).json({
+      status: "success",
+      results: conversations.length,
+      data: { conversations },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get messages for a conversation (as admin)
+// @route   GET /api/admin/chats/:id/messages
+// @access  Private (Admin)
+export const getGlobalChatMessages = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const chatService = await import("../services/chat.service.js");
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    const result = await chatService.getMessages(req.user.id, req.params.id, page, limit, true); // true for isAdmin
+
+    res.status(200).json({
+      status: "success",
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Send a message to a conversation (as admin)
+// @route   POST /api/admin/chats/:id/messages
+// @access  Private (Admin)
+export const sendGlobalChatMessage = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const chatService = await import("../services/chat.service.js");
+    // Admin user ID is req.user.id ("ADMIN-000")
+    const message = await chatService.sendMessage("ADMIN-000", req.params.id, req.body, true); // true for isAdmin
+
+    // Broadcast to live WebSockets (so Guest, Host and other Admins see the message instantly)
+    const io = getSocketIO();
+    if (io) {
+      io.to(req.params.id).emit("message:new", { message });
+      io.to("admin-room").emit("message:new", { message });
+    }
+
+    res.status(201).json({
+      status: "success",
+      data: { message },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ──────────────────────── Audit Logs (Admin) ────────────────────────
 
 // @desc    List audit logs (admin)
@@ -755,6 +821,52 @@ export const cancelBooking = async (req: any, res: Response, next: NextFunction)
       message: "Booking cancelled successfully.",
       data: result,
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// @desc    Admin: Generic image upload (for testimonials etc.)
+// @route   POST /api/admin/upload-image
+// @access  Private (Admin)
+export const uploadAdminImage = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ status: "fail", message: "No image file provided." });
+      return;
+    }
+    const result = await uploadMedia(req.file, "admin_uploads");
+    res.status(200).json({
+      status: "success",
+      message: "Image uploaded successfully.",
+      data: { url: result.url },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get System Settings
+// @route   GET /api/admin/settings
+// @access  Private (Admin)
+export const getSystemSettings = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const settings = await adminService.getSystemSettings();
+    res.status(200).json({ status: "success", data: settings });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update System Settings
+// @route   PUT /api/admin/settings
+// @access  Private (Admin)
+export const updateSystemSettings = async (req: any, res: Response, next: NextFunction): Promise<void> => {
+  try {
+    const { isPayAtPropertyEnabled } = req.body;
+    const settings = await adminService.updateSystemSettings({ isPayAtPropertyEnabled });
+    res.status(200).json({ status: "success", data: settings, message: "Settings updated successfully" });
   } catch (error) {
     next(error);
   }

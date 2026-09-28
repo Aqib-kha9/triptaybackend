@@ -147,11 +147,12 @@ async function handleSendMessage(
       return;
     }
 
-    // Verify user is participant
+    // Verify user is participant or Admin
+    const userRole = socket.data.userRole as string;
     const conversation = await prisma.conversation.findFirst({
       where: {
         id: conversationId,
-        participants: { has: userId },
+        ...(userRole === "Admin" ? {} : { participants: { has: userId } }),
         isActive: true,
       },
     });
@@ -222,8 +223,9 @@ async function handleSendMessage(
       },
     });
 
-    // Emit to the conversation room
+    // Emit to the conversation room and admin room
     io.to(conversationId).emit("message:new", { message: populatedMessage });
+    io.to("admin-room").emit("message:new", { message: populatedMessage });
 
     callback({ ok: true, data: populatedMessage });
   } catch (error: unknown) {

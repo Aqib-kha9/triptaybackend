@@ -11,6 +11,7 @@ import { sendTemplatedEmail } from "./email.service.js";
 import { sendPushToUser } from "./push.service.js";
 import { createAuditLog } from "./audit.service.js";
 import { getCancellationPolicySettings } from "./configuration.service.js";
+import { taxService } from "./tax.service.js";
 
 // ─── Types ───
 export interface CreateBookingInput {
@@ -29,6 +30,7 @@ export interface CreateBookingInput {
   specialRequests?: string;
   couponCode?: string;
   bookingType?: "instant" | "request";
+  paymentMethod?: "ONLINE" | "PAY_AT_PROPERTY";
   /** For multi-unit (isEntirePlace=false) listings: { [roomId]: quantity } */
   roomSelections?: Record<string, number>;
 }
@@ -38,10 +40,16 @@ export interface BookingPricing {
   cleaningFee: number;
   securityDeposit: number;
   extraGuestCharges: number;
-  taxAmount: number;
+  taxAmount: number; // customer total tax
+  accommodationTax: number;
+  platformFeeTax: number;
+  commissionTax: number;
+  tcsDeduction: number;
+  tdsDeduction: number;
   platformFee: number;
   discountAmount: number;
   commissionAmount: number;
+  commissionRate: number;
   hostPayoutAmount: number;
   totalAmount: number;
   nights: number;
@@ -96,6 +104,22 @@ async function mapBookingToFrontend(booking: any, currentUserId?: string) {
     }
   }
 
+  // Fetch Host details
+  let hostName = "";
+  let hostEmail = "";
+  let hostPhone = "";
+  if (booking.hostId) {
+    const host = await prisma.user.findUnique({
+      where: { id: booking.hostId },
+      select: { name: true, email: true, phone: true }
+    });
+    if (host) {
+      hostName = host.name;
+      hostEmail = host.email || "";
+      hostPhone = host.phone || "";
+    }
+  }
+
   // Generate a fallback OTP on-the-fly for older bookings if confirmed/paid
   let checkInOtp = booking.checkInOtp;
   if (!checkInOtp && (booking.status === "confirmed" || booking.status === "paid")) {
@@ -128,8 +152,15 @@ async function mapBookingToFrontend(booking: any, currentUserId?: string) {
     }
   }
 
+  // Ensure vendorDebtAmount is populated for older PAP bookings
+  let vendorDebtAmount = booking.vendorDebtAmount;
+  if (booking.paymentMethod === "PAY_AT_PROPERTY" && !vendorDebtAmount) {
+    vendorDebtAmount = (booking.totalAmount || 0) - (booking.hostPayoutAmount || 0) - (booking.securityDeposit || 0);
+  }
+
   return {
     ...booking,
+    vendorDebtAmount,
     // Expose the human-readable reference under the field the frontend expects
     bookingId: booking.bookingRef ?? booking.bookingId,
     // Normalize status casing for the frontend
@@ -138,6 +169,9 @@ async function mapBookingToFrontend(booking: any, currentUserId?: string) {
     location: location || booking.location || "",
     checkInOtp: filteredOtp,
     roomDetails,
+    hostName,
+    hostEmail,
+    hostPhone,
   };
 }
 
@@ -161,13 +195,13 @@ export async function calculateBookingPricing(
   checkOut: Date | null,
   guests: number,
   couponCode?: string,
+  totalUnits: number = 1
 ): Promise<BookingPricing> {
   let baseAmount = 0;
   let nights = 1;
   let cleaningFee = 0;
   let securityDeposit = 0;
   let extraGuestCharges = 0;
-  let taxAmount = 0;
 
   if (itemType === "listing") {
     if (!checkIn || !checkOut) {
@@ -175,7 +209,6 @@ export async function calculateBookingPricing(
     }
     nights = calculateNights(checkIn, checkOut);
 
-    // Calculate base price considering weekend pricing
     let totalBase = 0;
     const weekendPrice = item.weekendPrice || item.basePrice;
     for (let i = 0; i < nights; i++) {
@@ -187,38 +220,36 @@ export async function calculateBookingPricing(
     cleaningFee = item.cleaningFee || 0;
     securityDeposit = item.securityDeposit || 0;
 
-    // Extra guest charges
     const maxGuests = item.maxGuests || 1;
     if (guests > maxGuests && item.extraGuestPrice) {
       extraGuestCharges = (guests - maxGuests) * item.extraGuestPrice * nights;
     }
-
-    // Taxes
-    taxAmount = (baseAmount + cleaningFee) * (item.taxes || 0) / 100;
   } else {
-    // Activity pricing
     baseAmount = item.basePrice * guests;
     securityDeposit = item.securityDeposit || 0;
-    taxAmount = baseAmount * (item.taxes || 0) / 100;
     nights = 0;
   }
 
-  // Load platform fee and commission rates from Configurations dynamically
-  const platformFeeConfig = await prisma.configuration.findUnique({
-    where: { key: "platform_fee_rate" },
-  });
-  const platformFeeRate = platformFeeConfig ? parseFloat(platformFeeConfig.value) : 5; // 5% default
-
-  const commissionConfig = await prisma.configuration.findUnique({
-    where: { key: "commission_rate" },
-  });
-  const commissionRate = commissionConfig ? parseFloat(commissionConfig.value) : 10; // 10% default
-
+  const platformFeeConfig = await prisma.configuration.findUnique({ where: { key: "platform_fee_rate" } });
+  const platformFeeRate = platformFeeConfig ? parseFloat(platformFeeConfig.value) : 5;
   const platformFee = Math.round(baseAmount * platformFeeRate / 100);
+
+  // 1. Calculate Customer Taxes
+  const { accommodationTax, platformFeeTax } = await taxService.calculateCustomerTaxes(
+    itemType,
+    baseAmount,
+    cleaningFee,
+    extraGuestCharges,
+    nights,
+    platformFee,
+    item.taxes,
+    totalUnits
+  );
+
+  const taxAmount = accommodationTax + platformFeeTax;
 
   const subtotal = baseAmount + cleaningFee + extraGuestCharges + taxAmount + securityDeposit + platformFee;
 
-  // Apply coupon discount
   let discountAmount = 0;
   let couponId: string | undefined;
   if (couponCode) {
@@ -231,9 +262,27 @@ export async function calculateBookingPricing(
 
   const totalAfterDiscount = subtotal - discountAmount;
 
-  // Calculate commission (charged to host/vendor)
+  const commissionConfig = await prisma.configuration.findUnique({ where: { key: "commission_rate" } });
+  const commissionRate = commissionConfig ? parseFloat(commissionConfig.value) : 10;
   const commissionAmount = (totalAfterDiscount * commissionRate) / 100;
-  const hostPayoutAmount = totalAfterDiscount - commissionAmount - securityDeposit;
+
+  // 2. Calculate Vendor Deductions (ECO)
+  const totalAccommodationRevenue = baseAmount + cleaningFee + extraGuestCharges;
+  const { commissionTax, tcsDeduction, tdsDeduction } = await taxService.calculateVendorDeductions(
+    totalAccommodationRevenue,
+    commissionAmount
+  );
+
+  let hostPayoutAmount = (baseAmount + cleaningFee + extraGuestCharges)
+    - commissionAmount
+    - commissionTax
+    - tcsDeduction
+    - tdsDeduction;
+
+  // For Activities, platform passes the GST to the vendor to remit.
+  if (itemType === "activity") {
+    hostPayoutAmount += accommodationTax;
+  }
 
   return {
     baseAmount,
@@ -241,9 +290,15 @@ export async function calculateBookingPricing(
     securityDeposit,
     extraGuestCharges,
     taxAmount,
+    accommodationTax,
+    platformFeeTax,
+    commissionTax,
+    tcsDeduction,
+    tdsDeduction,
     platformFee,
     discountAmount,
     commissionAmount,
+    commissionRate,
     hostPayoutAmount,
     totalAmount: totalAfterDiscount,
     nights,
@@ -375,6 +430,19 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
 
   if (item.status !== "published") {
     throw new BadRequestError("This item is not available for booking.");
+  }
+
+  // Pay At Property validation: check if system allows it and if listing supports it
+  const isPapRequested = data.paymentMethod === "PAY_AT_PROPERTY";
+  if (isPapRequested) {
+    const papConfig = await prisma.configuration.findUnique({ where: { key: "pay_at_property_enabled" } });
+    const isPapGloballyEnabled = papConfig?.value === "true" || papConfig?.value === true as any;
+    if (!isPapGloballyEnabled) {
+      throw new BadRequestError("Pay at Property is not currently available.");
+    }
+    if (!item.allowPayAtProperty) {
+      throw new BadRequestError("This listing does not support Pay at Property.");
+    }
   }
 
   // Prevent booking your own item
@@ -599,10 +667,14 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
     const roomMap = new Map(rooms.map((r: any) => [r.id, r]));
     
     let totalRoomBasePrice = 0;
+    let totalUnits = 0;
     for (const [roomId, qty] of Object.entries(data.roomSelections)) {
       if (qty <= 0) continue;
       const room = roomMap.get(roomId);
-      if (room) totalRoomBasePrice += room.basePrice * qty;
+      if (room) {
+        totalRoomBasePrice += room.basePrice * qty;
+        totalUnits += qty;
+      }
     }
     
     const weekendRatio = item.basePrice > 0 && item.weekendPrice ? (item.weekendPrice / item.basePrice) : 1;
@@ -614,9 +686,9 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
       weekendPrice: totalRoomBasePrice * weekendRatio 
     };
     
-    pricing = await calculateBookingPricing(tempItem, data.itemType, checkIn, checkOut, data.guests, data.couponCode);
+    pricing = await calculateBookingPricing(tempItem, data.itemType, checkIn, checkOut, data.guests, data.couponCode, totalUnits);
   } else {
-    pricing = await calculateBookingPricing(item, data.itemType, checkIn, checkOut, data.guests, data.couponCode);
+    pricing = await calculateBookingPricing(item, data.itemType, checkIn, checkOut, data.guests, data.couponCode, 1);
   }
 
   // Determine booking type
@@ -654,13 +726,21 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
       securityDeposit: pricing.securityDeposit,
       extraGuestCharges: pricing.extraGuestCharges,
       taxAmount: pricing.taxAmount,
+      accommodationTax: pricing.accommodationTax,
+      platformFeeTax: pricing.platformFeeTax,
+      commissionTax: pricing.commissionTax,
+      tcsDeduction: pricing.tcsDeduction,
+      tdsDeduction: pricing.tdsDeduction,
       platformFee: pricing.platformFee,
       discountAmount: pricing.discountAmount,
       commissionAmount: pricing.commissionAmount,
       hostPayoutAmount: pricing.hostPayoutAmount,
       totalAmount: pricing.totalAmount,
       status,
-      paymentStatus: "pending",
+      paymentStatus: isPapRequested ? "pending" : "pending", // PAP: pending until vendor confirms collection
+      paymentMethod: isPapRequested ? "PAY_AT_PROPERTY" : "ONLINE",
+      papSettlementStatus: isPapRequested ? "pending" : "not_applicable",
+      vendorDebtAmount: isPapRequested ? (pricing.totalAmount - pricing.hostPayoutAmount - pricing.securityDeposit) : 0,
       bookingType,
       checkInOtp: Math.floor(1000 + Math.random() * 9000).toString(),
       guestName: data.guestName || user.name,
@@ -699,13 +779,27 @@ export async function createBooking(userId: string, data: CreateBookingInput) {
     data: {
       bookingId: booking.id,
       hostId: item.hostId,
-      rate: config.commission.defaultRate,
+      rate: pricing.commissionRate,
       baseAmount: pricing.totalAmount,
       commissionAmount: pricing.commissionAmount,
       hostPayoutAmount: pricing.hostPayoutAmount,
-      status: "pending",
+      gstOnCommission: pricing.commissionTax,
+      isPapBooking: isPapRequested,
+      // For PAP: commission is owed by vendor (debt), not collected from payment
+      status: isPapRequested ? "debt_pending" : "pending",
     },
   });
+
+  // For PAP bookings: auto-confirm booking (no payment gateway needed)
+  if (isPapRequested) {
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        status: bookingType === "instant" ? "confirmed" : "pending",
+        confirmedAt: bookingType === "instant" ? new Date() : null,
+      },
+    });
+  }
 
   // Wait for payment before sending confirmation notifications
   // await sendBookingNotifications(booking, item, user, "created");
@@ -1059,6 +1153,20 @@ export async function cancelBooking(
     refundAmount = 0;
   }
 
+  const isUnpaid = booking.paymentStatus === "pending";
+  if (isUnpaid) {
+    refundAmount = 0;
+  }
+
+  // Proportional GST and Payout Reversals
+  const refundRatio = booking.totalAmount > 0 ? refundAmount / booking.totalAmount : 0;
+  let keepRatio = 1 - refundRatio;
+
+  // If the booking was never paid (e.g. uncollected PAP), nobody keeps any money
+  if (isUnpaid) {
+    keepRatio = 0;
+  }
+
   // Update booking
   const updated = await prisma.booking.update({
     where: { id: bookingId },
@@ -1069,14 +1177,37 @@ export async function cancelBooking(
       cancelledAt: now,
       // Store the calculated refund amount, but let processRefund update the paymentStatus
       refundAmount,
+      
+      // Proportional Ledger adjustments
+      accommodationTax: Math.round((booking.accommodationTax || 0) * keepRatio),
+      platformFeeTax: Math.round((booking.platformFeeTax || 0) * keepRatio),
+      commissionTax: Math.round((booking.commissionTax || 0) * keepRatio),
+      tcsDeduction: Math.round((booking.tcsDeduction || 0) * keepRatio),
+      tdsDeduction: Math.round((booking.tdsDeduction || 0) * keepRatio),
+      commissionAmount: Math.round((booking.commissionAmount || 0) * keepRatio),
+      hostPayoutAmount: Math.round((booking.hostPayoutAmount || 0) * keepRatio),
     },
   });
 
-  // Reverse commission
-  await prisma.commission.updateMany({
-    where: { bookingId },
-    data: { status: "reversed" },
-  });
+  // Update commission based on refund logic
+  if (keepRatio === 0) {
+    // 100% refund, reverse the commission entirely
+    await prisma.commission.updateMany({
+      where: { bookingId },
+      data: { status: "reversed" },
+    });
+  } else {
+    // Partial refund (or no refund), adjust the commission record proportionally but keep it pending
+    await prisma.commission.updateMany({
+      where: { bookingId },
+      data: { 
+        baseAmount: Math.round((booking.totalAmount || 0) * keepRatio),
+        commissionAmount: Math.round((booking.commissionAmount || 0) * keepRatio),
+        hostPayoutAmount: Math.round((booking.hostPayoutAmount || 0) * keepRatio),
+        // Keep status as it was (e.g., "pending") so it can still be paid out
+      },
+    });
+  }
 
   // Release coupon usage if applicable
   await releaseCouponUsage(bookingId);
@@ -1424,12 +1555,13 @@ export async function verifyCheckIn(bookingId: string, hostId: string, otp: stri
   }
 
   // Update booking status to completed and checkInStatus to checked_in
+  const isPendingPap = booking.paymentMethod === "PAY_AT_PROPERTY" && booking.paymentStatus === "pending";
   const updatedBooking = await prisma.booking.update({
     where: { id: booking.id },
     data: {
-      status: "completed",
+      status: isPendingPap ? booking.status : "completed",
       checkInStatus: "checked_in",
-      completedAt: new Date(),
+      completedAt: isPendingPap ? null : new Date(),
     }
   });
 
@@ -1458,4 +1590,105 @@ export default {
   getBookingPreview,
   calculateBookingPricing,
   verifyCheckIn,
+  confirmPapCollection,
+  settlePapDebt,
 };
+
+// ─── PAP: Vendor confirms physical cash collected from guest ───────────────────
+export async function confirmPapCollection(bookingId: string, vendorId: string) {
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  if (!booking) throw new NotFoundError("Booking not found.");
+  if (booking.hostId !== vendorId) throw new ForbiddenError("You do not own this booking.");
+  if (booking.paymentMethod !== "PAY_AT_PROPERTY") throw new BadRequestError("This is not a Pay at Property booking.");
+  if (booking.papSettlementStatus !== "pending") throw new BadRequestError("This PAP booking has already been confirmed or settled.");
+  if (booking.checkInStatus !== "checked_in") throw new BadRequestError("Guest must be checked in via OTP before confirming cash collection.");
+
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: {
+      paymentStatus: "paid",         // Guest paid vendor in cash
+      papCollectedAt: new Date(),
+      papSettlementStatus: "pending", // Commission debt is still pending settlement to platform
+      status: "completed",
+      completedAt: new Date(),
+    },
+  });
+
+  // Audit log
+  await createAuditLog({
+    actorId: vendorId,
+    actorRole: "Vendor",
+    action: "PAP_COLLECTION_CONFIRMED",
+    category: "payment",
+    resource: "Booking",
+    resourceId: bookingId,
+    details: { bookingRef: booking.bookingRef, vendorDebtAmount: booking.vendorDebtAmount },
+  });
+
+  return updated;
+}
+
+// ─── PAP: Admin settles vendor debt (commission + GST) ────────────────────────
+export async function settlePapDebt(bookingId: string, callerId: string, isAdmin: boolean, method: "wallet_deduction" | "manual") {
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId } });
+  if (!booking) throw new NotFoundError("Booking not found.");
+  if (!isAdmin && booking.hostId !== callerId) throw new ForbiddenError("You do not own this booking.");
+  if (booking.paymentMethod !== "PAY_AT_PROPERTY") throw new BadRequestError("This is not a Pay at Property booking.");
+  if (booking.papSettlementStatus === "settled") throw new BadRequestError("This PAP debt has already been settled.");
+  if (booking.papCollectedAt === null) throw new BadRequestError("Vendor has not confirmed cash collection yet.");
+
+  const debtAmount = booking.vendorDebtAmount;
+
+  if (method === "wallet_deduction") {
+    // Adjust from vendor's pending online earnings instead of a non-existent wallet
+    const vendorAgg = await prisma.commission.aggregate({
+      where: { hostId: booking.hostId, status: "pending", isPapBooking: false },
+      _sum: { hostPayoutAmount: true }
+    });
+    const pendingEarnings = vendorAgg._sum.hostPayoutAmount || 0;
+
+    if (pendingEarnings < debtAmount) {
+      throw new BadRequestError(`Insufficient pending earnings to offset debt. Debt: ₹${debtAmount}, Available Earnings: ₹${pendingEarnings}.`);
+    }
+
+    // Create a negative commission record (adjustment) to offset the pending earnings
+    await prisma.commission.create({
+      data: {
+        bookingId: booking.id,
+        hostId: booking.hostId,
+        rate: 0,
+        baseAmount: 0,
+        commissionAmount: 0,
+        hostPayoutAmount: -debtAmount, // Negative amount offsets positive earnings
+        isPapBooking: false, // False so it gets counted in online pending payouts
+        status: "pending"
+      }
+    });
+  }
+  // For "manual": admin records that it was settled offline
+
+  // Mark booking as settled
+  const updated = await prisma.booking.update({
+    where: { id: bookingId },
+    data: { papSettlementStatus: "settled" },
+  });
+
+  // Update commission record status
+  await prisma.commission.updateMany({
+    where: { bookingId, isPapBooking: true },
+    data: { status: "debt_settled" },
+  });
+
+  // Audit log
+  await createAuditLog({
+    actorId: callerId,
+    actorRole: isAdmin ? "Admin" : "Vendor",
+    action: "PAP_DEBT_SETTLED",
+    category: "payment",
+    resource: "Booking",
+    resourceId: bookingId,
+    details: { bookingRef: booking.bookingRef, debtAmount, method },
+  });
+
+  return updated;
+}

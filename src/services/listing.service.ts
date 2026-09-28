@@ -91,6 +91,7 @@ export interface CreateListingInput {
   nearbyPlaces?: unknown;
   languagesSpoken?: string[];
   instantBook?: boolean;
+  allowPayAtProperty?: boolean;
   advanceNoticeHours?: number;
   maxGuestsPerBooking?: number;
   status?: string;
@@ -317,6 +318,7 @@ export async function createListing(hostId: string, data: CreateListingInput) {
       hasKitchen: calcHasKitchen,
       kitchenDetails: calcKitchenDetails,
       houseRules: (data.houseRules as object) || null,
+      allowPayAtProperty: data.allowPayAtProperty ?? false,
       cancellationPolicy: await resolveCancellationPolicy(data.cancellationPolicy),
       cancellationDetails: data.cancellationDetails?.trim() || null,
       isPetFriendly: data.isPetFriendly ?? false,
@@ -373,6 +375,7 @@ export async function getMyListings(
       orderBy: { updatedAt: "desc" },
       skip,
       take: limit,
+      include: { rooms: true },
     }),
     prisma.listing.count({ where: filter }),
   ]);
@@ -423,7 +426,7 @@ export async function updateListing(id: string, hostId: string, data: Record<str
     "quietHoursStart", "quietHoursEnd",
     "nearbyPlaces", "languagesSpoken",
     "instantBook", "advanceNoticeHours", "maxGuestsPerBooking",
-    "status", "videoTourUrl",
+    "status", "videoTourUrl", "allowPayAtProperty",
   ];
 
   const numericFields = [
@@ -936,6 +939,7 @@ export async function browseNearby(lat: number, lng: number, radius: number, lim
     amenities: l.amenities,
     isPetFriendly: l.isPetFriendly,
     instantBook: l.instantBook,
+    allowPayAtProperty: l.allowPayAtProperty,
     price: l.basePrice,
     effectiveWeekendPrice: computeEffectiveWeekendPrice(
       l.basePrice as number,
@@ -963,6 +967,7 @@ export async function browseNearby(lat: number, lng: number, radius: number, lim
     minAge: a.minAge,
     included: a.included,
     instantBook: a.instantBook,
+    allowPayAtProperty: a.allowPayAtProperty,
     price: a.basePrice,
     effectiveWeekendPrice: computeEffectiveWeekendPrice(
       a.basePrice as number,

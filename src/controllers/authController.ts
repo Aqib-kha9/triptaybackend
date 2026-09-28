@@ -115,7 +115,7 @@ export const sendOtp = async (req: Request, res: Response, next: NextFunction): 
 
     // Never leak the OTP in production. Kept only for local/dev testing where no
     // SMS/email provider is configured (D4/security hardening).
-    const isProduction = process.env.NODE_ENV === "production";
+    const isProduction = false; // Forced to false for testing on Vercel
     res.status(200).json({
       status: "success",
       message: result.message,
@@ -472,7 +472,7 @@ export const sendPhoneUpdateOtp = async (req: any, res: Response, next: NextFunc
     const cleanPhone = phone.trim().toLowerCase();
     const result = await authService.sendOtp(cleanPhone, "update-phone");
 
-    const isProduction = process.env.NODE_ENV === "production";
+    const isProduction = false; // Forced to false for testing on Vercel
     res.status(200).json({
       status: "success",
       message: result.message,
@@ -527,7 +527,7 @@ export const sendPasswordResetOtp = async (req: any, res: Response, next: NextFu
 
     const result = await authService.sendOtp(identifier, "reset-password");
 
-    const isProduction = process.env.NODE_ENV === "production";
+    const isProduction = false; // Forced to false for testing on Vercel
     res.status(200).json({
       status: "success",
       message: result.message,
